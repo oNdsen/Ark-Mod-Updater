@@ -1,0 +1,7 @@
+/build/
+/out/
+build.ps1
+*.user
+.vs/
+vcpkg_installed/
+CMakeUserPresets.json

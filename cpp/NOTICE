@@ -1,0 +1,17 @@
+ARK Mod Updater (AMU) — C++ rewrite
+Copyright (c) 2026 oNdsen. Licensed under the MIT License (see LICENSE).
+
+This product bundles or links the following third-party components:
+
+- Dear ImGui — MIT License — https://github.com/ocornut/imgui
+- doctest — MIT License — https://github.com/doctest/doctest
+- Roboto (Roboto-Light.ttf) — Apache License 2.0 — https://fonts.google.com/specimen/Roboto
+
+Planned for later milestones:
+- SQLite (amalgamation) — Public Domain — https://sqlite.org
+- zlib — zlib License — https://zlib.net
+
+steamcmd.exe is Valve Corporation's software and is NOT part of this project.
+It is distributed under Valve's own terms; verify those terms before
+redistributing it. Prefer downloading it at first run / package time rather
+than committing it to this repository.

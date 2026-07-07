@@ -1,0 +1,24 @@
+"AppWorkshop"
+{
+	"appid"		"346110"
+	"SizeOnDisk"		"127868018"
+	"NeedsUpdate"		"0"
+	"WorkshopItemsInstalled"
+	{
+		"632091170"
+		{
+			"size"		"127868018"
+			"timeupdated"		"1537158323"
+			"manifest"		"881726055709807503"
+		}
+	}
+	"WorkshopItemDetails"
+	{
+		"632091170"
+		{
+			"manifest"		"881726055709807503"
+			"timeupdated"		"1537158323"
+			"latest_manifest"		"881726055709807503"
+		}
+	}
+}

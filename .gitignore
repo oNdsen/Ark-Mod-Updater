@@ -1,0 +1,18 @@
+# Build output
+cpp/build/
+
+# Machine-specific local build helper (contains local toolchain paths)
+cpp/build.ps1
+
+# Publish output
+publish/
+
+# Local editor / AI-assistant state
+.claude/
+.vs/
+.vscode/
+*.user
+
+# OS cruft
+Thumbs.db
+Desktop.ini

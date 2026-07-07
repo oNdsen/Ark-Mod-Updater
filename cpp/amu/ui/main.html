@@ -1,0 +1,2493 @@
+<html theme="dark">
+<head>
+<title>ARK Mod Updater</title>
+<style>
+
+:root {
+  --bg: #0C0F14;
+  --panel: #1D242E;
+  --side: #11151C;
+  --card: #1D242E;
+  --card-hover: #171C25;
+  --accent: #3DDC84;
+  --on-accent: #08351F;
+  --accent-dim: #12331F;
+  --danger: #FF4D5E;
+  --danger-dim: #3A1E22;
+  --warn: #F5A623;
+  --warn-dim: #3A2F10;
+  --text: #EAEEF3;
+  --muted: #93A0AE;
+  --chip: #22262E;
+  --line: #242B36;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Segoe UI", system-ui, sans-serif;
+  font-size: 14px;
+}
+body { display: flex; flex-direction: column; overflow: hidden; }
+
+/* ---------- header ---------- */
+header {
+  display: flex;
+  align-items: center;
+  flex: none;
+  background: var(--side);
+  border-bottom: 1px solid var(--line);
+  padding: 15px 22px;
+}
+header .logo {
+  width: 22px; height: 22px;
+  border-radius: 6px;
+  background: var(--accent);
+}
+header h1 {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  line-height: 1;
+  margin: 0 0 0 12px;
+}
+header .grow { flex: 1; }
+.wbtns { display: flex; }
+.wbtn {
+  width: 40px; height: 30px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 7px;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  margin-left: 2px;
+}
+.wbtn:hover { background: var(--card-hover); color: var(--text); }
+.wbtn.close:hover { background: #DF3535; color: #fff; }
+
+/* ---------- layout ---------- */
+main { flex: 1; display: flex; min-height: 0; }
+
+aside {
+  width: 190px;
+  flex: none;
+  background: var(--side);
+  border-right: 1px solid var(--line);
+  padding: 14px 12px;
+  box-sizing: border-box;
+}
+.section {
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  color: var(--muted);
+  margin: 4px 10px 8px 10px;
+}
+.section + .section, div + .section { margin-top: 16px; }
+.nav {
+  display: flex;
+  align-items: center;
+  padding: 8px 12px;
+  border-radius: 9px;
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+  margin-bottom: 4px;
+}
+.nav:hover { background: var(--card-hover); }
+.nav.active {
+  background: var(--panel);
+  color: var(--text);
+  border-left: 3px solid var(--accent);
+  padding-left: 9px;
+}
+/* Sciter centers via vertical-align (browsers ignore it on flex items -> preview unaffected). */
+header > *, footer > *, .nav > *, .pills > span, .thead > *, .trow > *, .kv > *,
+.crumbrow > *, #statuscard > *, .toggle > *, .actions > *, .updbar > *, .updrow > *,
+.addmodrow > *, .cfgbar > *, .cfgrow > *, .cval > *, #cfgfooter > *,
+.updline > *, #updbanner > * { vertical-align: middle; }
+.nav .dot { width: 7px; height: 7px; border-radius: 4px; margin-right: 8px; flex: none; vertical-align: middle; }
+/* state-driven dot colors (sidebar + status card): running=green, starting/stopping=amber,
+   crashed/failed=red, stopped/unknown=grey */
+.dot.green { background: var(--accent); }
+.dot.red   { background: var(--danger); }
+.dot.amber { background: var(--warn); }
+.dot.grey  { background: #6b7280; }
+.dot.pulse { animation: dotpulse 1.2s infinite; }
+@keyframes dotpulse { 0% { opacity: 1; } 50% { opacity: 0.35; } 100% { opacity: 1; } }
+.nav .grow { flex: 1; }
+/* server name: single line with ellipsis (a wrapping name pushed the row to
+   two lines once the badge took its space); div, not span - Sciter flex rule */
+.nav .nname {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-right: 8px;
+}
+/* mod-count as a primary badge (fixed height + line-height, Sciter recipe) */
+.nav .badge {
+  flex: none;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 10.5px;
+  font-weight: 600;
+  height: 16px;
+  line-height: 16px;
+  padding: 0 6px;
+  border-radius: 8px;
+  text-align: center;
+}
+
+/* ---------- content ---------- */
+#content { flex: 1; padding: 18px 22px; overflow: auto; box-sizing: border-box; }
+
+/* tab pills styled EXACTLY like the standard buttons (same font, height,
+   padding, border, radius and 8px gaps); active tab = primary-button green */
+.pills { display: inline-flex; }
+.pills span {
+  height: 31px;        /* + 2x1px border = 33px, the button height */
+  line-height: 31px;   /* fixed height + line-height (Sciter recipe) */
+  padding: 0 16px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  color: var(--text);
+  font-size: 12.5px;
+  cursor: pointer;
+  margin-right: 8px;
+}
+.pills span:hover { background: var(--card-hover); border-color: #34404f; }
+.pills span.active { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+
+.crumb { margin: 14px 0 10px 0; font-size: 13px; }
+.crumb b { color: var(--accent); font-weight: 400; }
+
+/* mods table */
+#modswrap { display: flex; align-items: flex-start; }
+#modtable {
+  flex: 1;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.thead, .trow {
+  display: flex;
+  align-items: center;
+  padding: 8px 12px;
+}
+.thead {
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+.trow { border-bottom: 1px solid var(--line); cursor: pointer; font-size: 12.5px; }
+.trow:last-child { border-bottom: none; }
+.trow:hover { background: rgba(255,255,255,0.045); }
+.trow.sel { background: rgba(255,255,255,0.09); }
+.trow.removedrow { background: rgba(229,72,77,0.12); }
+.c-thumb { width: 44px; flex: none; }
+/* mini workshop thumbnail; the grey .box is the fallback when no preview URL
+   is cached yet (or the image fails to load) */
+.c-thumb .box {
+  width: 34px; height: 22px;
+  border-radius: 6px;
+  background: #2c3542;
+}
+.c-thumb .tmb { width: 34px; height: 22px; border-radius: 6px; }
+.removedrow .c-thumb .box { background: #3a1e20; }
+.c-id { width: 100px; flex: none; color: var(--muted); }
+.c-status { width: 160px; flex: none; }
+.c-name { flex: 1; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.removedrow .c-name { color: var(--danger); }
+
+.pill {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 10px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+}
+.pill.ok  { background: rgba(61,220,132,0.16);  color: #63E39C; border-color: rgba(61,220,132,0.40); }
+.pill.inc { background: rgba(245,166,35,0.16);  color: #F7B84E; border-color: rgba(245,166,35,0.42); }
+.pill.no  { background: rgba(147,160,174,0.14); color: #BAC4D2; border-color: rgba(147,160,174,0.34); }
+.pill.rem { background: rgba(255,77,94,0.16);   color: #FF7A85; border-color: rgba(255,77,94,0.42); }
+
+/* custom mouse-following tooltip (not the native title attribute) */
+#tooltip {
+  position: absolute;
+  display: none;
+  max-width: 260px;
+  background: #1D242E;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px 12px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text);
+  white-space: pre-line;   /* configurator tips carry \n (Default: / Example: lines) */
+  box-shadow: 0 8px 24px rgba(0,0,0,0.55);
+  z-index: 1000;
+}
+
+/* preview card */
+#preview {
+  width: 230px;
+  flex: none;
+  margin-left: 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px;
+  box-sizing: border-box;
+}
+#preview .img {
+  height: 130px;
+  border-radius: 8px;
+  background: var(--card);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+#preview h3 { font-size: 14px; font-weight: 600; margin: 12px 0 2px 0; }
+#preview .id { color: var(--muted); font-size: 12px; }
+#preview .kv { display: flex; margin-top: 8px; font-size: 12px; align-items: center; }
+#preview .kv .k { width: 70px; flex: none; color: var(--muted); }
+#preview a { color: var(--accent); font-size: 12px; cursor: pointer; }
+#preview a:hover { text-decoration: underline; }
+
+/* buttons - pill style like the mock */
+.actions { margin-top: 12px; }
+button {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  padding: 7px 16px;
+  font-size: 12.5px;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  cursor: pointer;
+  margin-right: 8px;
+}
+button:hover { background: var(--card-hover); border-color: #34404f; }
+button.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+button.primary:hover { background: #54E899; border-color: #54E899; }
+button.danger { color: var(--danger); }
+
+/* server form */
+.form { display: flex; gap: 16px; }
+.form .colw { flex: 1; }
+.field { margin-bottom: 12px; }
+.field label { display: block; color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+.field input {
+  display: block;
+  width: 100%;
+  height: 36px;
+  line-height: 20px;
+  box-sizing: border-box;
+  background: #161A22;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  caret-color: #3DDC84;
+  padding: 7px 10px;
+  font-size: 13px;
+  font-family: "Segoe UI", system-ui, sans-serif;
+}
+.field input:focus { border-color: var(--accent); }
+
+/* combobox: free-text input + a caret button opening a suggestion list (used for
+   the Map field: official maps per game, but any custom/mod map can be typed) */
+.combo { position: relative; }
+.combo input { padding-right: 30px; }  /* room for the caret button */
+.combo .caret {
+  position: absolute;
+  /* explicit height, NOT top+bottom: Sciter does not stretch absolute elements
+     from opposing offsets - the container collapsed and clipped the arrow */
+  right: 1px; top: 1px; height: 34px;
+  width: 28px;
+  cursor: pointer;
+  border-radius: 0 7px 7px 0;
+}
+.combo .caret:hover { background: var(--card-hover); }
+/* the triangle is stacked from four 1px bars: Sciter renders neither font
+   glyphs (blurry), transparent-border triangles (collapse) nor inline SVG -
+   plain solid divs are the one thing that draws crisply everywhere */
+.combo .caret div { position: absolute; left: 50%; height: 1px; background: var(--muted); }
+.combo .caret:hover div { background: var(--text); }
+.combo .caret .b1 { width: 8px; margin-left: -4px; top: 15px; }
+.combo .caret .b2 { width: 6px; margin-left: -3px; top: 16px; }
+.combo .caret .b3 { width: 4px; margin-left: -2px; top: 17px; }
+.combo .caret .b4 { width: 2px; margin-left: -1px; top: 18px; }
+.combolist {
+  position: absolute;
+  /* explicit px offsets + width: Sciter resolves neither top:100% nor
+     left+right stretching reliably (same class of bug as the caret height) */
+  top: 40px; left: 0;
+  width: 100%;
+  box-sizing: border-box;
+  max-height: 240px;
+  overflow: auto;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 10px 28px rgba(0,0,0,0.55);
+  z-index: 950;
+}
+.combolist .copt { padding: 7px 12px; cursor: pointer; font-size: 12.5px; }
+.combolist .copt:hover { background: var(--card-hover); }
+.combolist .copt .cn { font-size: 11px; color: var(--muted); }
+.combolist .cempty { padding: 7px 12px; font-size: 12px; color: var(--muted); }
+
+/* crumb row with the live status card on the right */
+.crumbrow { display: flex; align-items: center; margin: 14px 0 10px 0; }
+.crumbrow .crumb { margin: 0; }
+.crumbrow .grow { flex: 1; }
+#statuscard {
+  display: flex;
+  align-items: center;
+  background: var(--side);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px 14px;
+}
+/* dot + text column as divs, not spans: Sciter sizes fixed-width flex children reliably only on blocks */
+#statuscard .dot { width: 10px; height: 10px; border-radius: 5px; margin-right: 10px; flex: none; }
+#statuscard .slabel { font-size: 13px; font-weight: 600; line-height: 1.25; }
+#statuscard .ssub { font-size: 11px; color: var(--muted); line-height: 1.25; }
+
+/* launch options block */
+.block { border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-top: 4px; }
+.blabel { font-size: 10px; letter-spacing: 1.5px; color: var(--muted); margin-bottom: 12px; }
+.fieldrow { display: flex; gap: 12px; }
+.field.half { flex: 1; min-width: 0; }
+.fieldrow .field.wide { flex: 2; min-width: 0; }
+.toggles { display: flex; margin-top: 2px; }
+.toggle {
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  padding: 6px 14px 6px 7px;
+  margin-right: 10px;
+  font-size: 12.5px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.toggle:hover { background: var(--card-hover); }
+.toggle .box {
+  width: 16px; height: 16px;
+  border-radius: 5px;
+  border: 1px solid var(--line);
+  background: #161A22;
+  margin-right: 8px;
+  flex: none;
+}
+.toggle.on { color: var(--text); border-color: rgba(61,220,132,0.40); }
+.toggle.on .box { background: var(--accent); border-color: var(--accent); }
+.muted-note { margin-top: 12px; font-size: 12px; color: var(--muted); }
+.qmark { color: var(--muted); cursor: pointer; }
+
+/* thin vertical separator between lifecycle and config buttons */
+.actions .sep { display: inline-block; width: 1px; height: 22px; background: var(--line); margin: 0 12px 0 4px; }
+
+/* ---------- server configurator ---------- */
+.cfgbar { display: flex; align-items: center; margin: 14px 0 4px 0; }
+.cfgbar .grow { flex: 1; }
+.cfgbar input {
+  width: 260px;
+  height: 34px;
+  line-height: 20px;  /* Sciter: fixed-height inputs NEED an explicit line-height,
+                         or text + caret drift vertically (see .field input) */
+  box-sizing: border-box;
+  background: #161A22;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  caret-color: #3DDC84;
+  padding: 6px 10px;
+  font-size: 13px;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  margin-right: 10px;
+}
+.cfgbar input:focus { border-color: var(--accent); }
+/* dark select: style select AND option (Sciter popup list takes the option colors) */
+select.cfgsel {
+  height: 34px;
+  line-height: 20px;
+  box-sizing: border-box;
+  background: #161A22;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 6px 10px;
+  font-size: 12.5px;
+  font-family: "Segoe UI", system-ui, sans-serif;
+}
+select.cfgsel option { background: #161A22; color: var(--text); }
+.cfgcount { font-size: 12px; color: var(--muted); }
+
+.cfgcat { font-size: 10px; letter-spacing: 1.5px; color: var(--muted); margin: 18px 2px 8px 2px; }
+.cfggroup { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.cfgrow {
+  display: flex;
+  align-items: center;
+  padding: 9px 14px 9px 11px;
+  border-bottom: 1px solid var(--line);
+  border-left: 3px solid transparent;   /* accent when the key is set in the ini */
+}
+.cfgrow:last-child { border-bottom: none; }
+.cfgrow.isset { border-left-color: var(--accent); }
+/* left/right columns as divs, not spans (Sciter fixed-width flex children) */
+.cfgrow .cleft { flex: 1; min-width: 0; margin-right: 14px; }
+.cfgrow .cname { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cfgrow .chint { font-size: 11px; color: var(--muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cfgrow .cval { flex: none; display: flex; align-items: center; }
+.cfgrow input {
+  height: 30px;
+  line-height: 18px;  /* 30px - 2px border - 2x5px padding; keeps text + caret centered */
+  box-sizing: border-box;
+  background: #161A22;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  caret-color: #3DDC84;
+  padding: 5px 9px;
+  font-size: 12.5px;
+  font-family: "Segoe UI", system-ui, sans-serif;
+}
+.cfgrow input.cfgnum { width: 110px; }
+.cfgrow input.cfgstr { width: 260px; }
+.cfgrow input:focus { border-color: var(--accent); }
+.cfgrow input.invalid { border-color: var(--danger); }
+.cfgrow .toggle { margin-right: 0; }
+.cfgrow .toggle.dim { opacity: 0.65; }   /* not set: toggle only mirrors the default */
+.cfgraw {
+  font-family: Consolas, monospace;
+  font-size: 11.5px;
+  color: var(--muted);
+  background: #0F1319;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 7px 10px;
+  max-width: 340px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+/* complex/array family editor: [Edit] link + monospace textarea styled like the inputs */
+.cfgeditlink { display: block; font-size: 11px; color: var(--accent); cursor: pointer; margin-top: 4px; }
+.cfgeditlink:hover { text-decoration: underline; }
+.cfgedit { width: 340px; }
+.cfgedit textarea {
+  display: block;
+  width: 100%;
+  min-height: 96px;
+  box-sizing: border-box;
+  background: #161A22;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  caret-color: #3DDC84;
+  padding: 7px 10px;
+  font-family: Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.cfgedit textarea:focus { border-color: var(--accent); }
+.cfgedit textarea.invalid { border-color: var(--danger); }
+.cfgtabtns { margin-top: 8px; }
+.cfgreset { flex: none; width: 22px; text-align: center; color: var(--muted); cursor: pointer; margin-left: 8px; font-size: 13px; }
+.cfgreset:hover { color: var(--danger); }
+
+/* floating pending-changes bar (fixed: stays put while #content scrolls) */
+#cfgfooter {
+  position: fixed;
+  right: 30px;
+  bottom: 58px;
+  display: none;
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 14px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.55);
+  z-index: 900;
+}
+#cfgfooter .cfgn { font-size: 12.5px; margin-right: 14px; }
+#cfgfooter button { margin-right: 8px; }
+#cfgfooter button:last-child { margin-right: 0; }
+
+/* logs */
+#logbox {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #0F1319;
+  padding: 12px;
+  font-family: Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.7;
+}
+#logbox .logrow { display: flex; }
+/* div columns (not spans): Sciter applies width/flex reliably only to blocks.
+   Widths sized snug: 19-char "01.07.2026 12:20:06" stamp + a 6-char [DEBG] tag. */
+#logbox .t { color: var(--muted); flex: none; width: 142px; }
+#logbox .lvl { flex: none; width: 56px; }
+/* pre-wrap keeps the embedded line breaks of multi-line entries (steamcmd output);
+   the flex row gives continuation lines a hanging indent under the message column. */
+#logbox .m { flex: 1; min-width: 0; white-space: pre-wrap; word-break: break-word; }
+.logtop { display: flex; align-items: center; margin-bottom: 10px; }
+.logtop .grow { flex: 1; }
+
+/* ---------- update-progress screen ---------- */
+.updbar { display: flex; align-items: center; margin: 0 0 10px 0; }
+/* the phase renders as a status badge (reuses the .pill palette: error=red,
+   done=green, everything else neutral) */
+.updbar .updphase { font-size: 12px; font-weight: 600; }
+.updbar .updcount { font-family: Consolas, monospace; font-size: 13px; color: var(--warn); margin-left: 14px; }
+.updbar button { margin-left: 14px; margin-right: 0; }
+.updnote { font-size: 12px; color: var(--warn); margin: 0 0 10px 0; }
+/* progress console: same look as #logbox, but a fixed-height auto-scrolling box */
+#updbox {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #0F1319;
+  padding: 12px;
+  box-sizing: border-box;
+  height: 260px;
+  overflow: auto;
+  font-family: Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #ECF0F5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+/* per-mod status strip */
+#updmods { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; margin-top: 12px; }
+.updrow { display: flex; align-items: center; padding: 7px 12px; border-bottom: 1px solid var(--line); font-size: 12.5px; }
+.updrow:last-child { border-bottom: none; }
+.updrow .uid { width: 120px; flex: none; color: var(--muted); }
+.updrow .ust { flex: 1; }
+
+/* inline Add-Mod row on the mods screen */
+.addmodrow input {
+  width: 180px;
+  height: 34px;
+  line-height: 20px;  /* Sciter: fixed-height inputs need an explicit line-height */
+  box-sizing: border-box;
+  background: #161A22;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  caret-color: #3DDC84;
+  padding: 6px 10px;
+  font-size: 13px;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  margin-right: 10px;
+}
+.addmodrow input:focus { border-color: var(--accent); }
+.addmodrow .am-note { color: var(--warn); font-size: 12px; margin-left: 4px; }
+
+/* ---------- add-server + settings screens ---------- */
+.fhint { font-size: 11px; color: var(--muted); margin-top: 4px; }
+.formnote { display: none; margin-top: 12px; font-size: 12px; color: var(--danger); }
+.block + .block { margin-top: 16px; }
+.g-note { font-size: 12px; }
+.aboutline { font-size: 12.5px; margin-bottom: 8px; }
+.aboutline:last-child { margin-bottom: 0; }
+.aboutline a { color: var(--accent); cursor: pointer; }
+.aboutline a:hover { text-decoration: underline; }
+
+/* About block: app-update row (status text is colored inline by paintAppUpdate) */
+.updline { margin: 10px 0; }
+.updline .upd-cur { color: var(--muted); margin-right: 12px; }
+.updline .upd-status { margin-right: 12px; }
+
+/* slim dismissible startup-notice banner at the top of #content */
+#updbanner {
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--accent);
+  background: var(--accent-dim);
+  border-radius: 10px;
+  padding: 7px 12px;
+  margin-bottom: 14px;
+  font-size: 12.5px;
+}
+#updbanner .grow { flex: 1; }
+#updbanner .btxt b { color: var(--accent); }
+#updbanner button { margin-right: 0; }
+#updbanner .bx {
+  width: 26px;
+  text-align: center;
+  margin-left: 8px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 13px;
+}
+#updbanner .bx:hover { color: var(--text); }
+
+/* footer */
+footer {
+  display: flex;
+  align-items: center;
+  flex: none;
+  background: var(--side);
+  border-top: 1px solid var(--line);
+  padding: 10px 22px;
+  font-size: 12px;
+}
+footer .grow { flex: 1; }
+footer a { color: var(--muted); cursor: pointer; }
+footer a:hover { color: var(--accent); text-decoration: underline; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo"></div>
+  <h1>ARK MOD UPDATER</h1>
+</header>
+
+<main>
+  <aside>
+    <div class="section">SERVERS</div>
+    <div id="servers"></div>
+    <div class="nav" id="addserver">+ Add Server</div>
+    <div class="section">SYSTEM</div>
+    <div class="nav" id="navlogs">Logs</div>
+    <div class="nav" id="navsettings">Settings</div>
+  </aside>
+
+  <div id="content"></div>
+</main>
+
+<footer>
+  <a id="linksite">ondsen.ch</a>
+  <div class="grow"></div>
+  <a id="linkdonate">Donate a beer (PayPal)</a>
+</footer>
+
+<div id="tooltip"></div>
+
+<!-- plain (non-module) script defining global CONFIG_SCHEMA; must load before the module below -->
+<script src="config_schema.js"></script>
+<script type="module">
+const URL_SITE = "https://ondsen.ch";
+const URL_PAYPAL = "https://www.paypal.com/cgi-bin/webscr?cmd=_s-xclick&hosted_button_id=7H8LA6ZSYS752";
+const URL_WS = "https://steamcommunity.com/sharedfiles/filedetails/?id=";
+
+// Open a URL in the default browser: Sciter (env.launch) or plain browser fallback.
+async function openExternal(url) {
+  try {
+    const env = await import("@env");
+    env.launch(url);
+  } catch (e) {
+    window.open(url, "_blank");
+  }
+}
+
+// Stub data for the plain-browser design preview; native amucore data replaces it in the app.
+const STUB_SERVERS = [
+  { id: 1, name: "Server 1", map: "TheIsland", path: "D:\\ARK\\srv1\\ShooterGame",
+    rconIp: "127.0.0.1", rconPort: "27020", online: true,
+    mods: [
+      { id: "731604991",  name: "Structures Plus",  state: "ok",  size: "245 MB", updated: "2026-06-14" },
+      { id: "895711211",  name: "Awesome SpyGlass", state: "inc", size: "3 MB",   updated: "2026-06-14" },
+      { id: "1404697612", name: "Super Structures", state: "no",  size: "-",      updated: "-" },
+      { id: "632091170",  name: "Old Mod XYZ",      state: "rem", size: "1 MB",   updated: "2024-01-02" },
+    ] },
+  { id: 2, name: "Server 2", map: "Ragnarok", path: "D:\\ARK\\srv2\\ShooterGame",
+    rconIp: "127.0.0.1", rconPort: "27021", online: false,
+    mods: [
+      { id: "1609138312", name: "Dino Storage v2",      state: "ok", size: "12 MB", updated: "2026-06-20" },
+      { id: "821530042",  name: "Automated Ark",        state: "ok", size: "88 MB", updated: "2026-06-20" },
+      { id: "1178308359", name: "Krakens Better Dinos", state: "no", size: "-",     updated: "-" },
+    ] },
+];
+
+// Launch-config stub for the browser preview; native replaces it via getLaunchConfig(id).
+const STUB_LAUNCH = {
+  game: "ASE", sessionName: "My ARK Server", gamePort: 7777, queryPort: 27015,
+  rconPort: 27020, rconEnabled: true,
+  maxPlayers: 70, extraArgs: "", autoRestart: true, battleye: false, crossplay: false,
+  autoStart: 0,
+};
+
+// Official maps per game (technical name = what goes on the command line; ASA
+// maps carry the _WP World-Partition suffix). The Map field stays free-text so
+// mod/custom maps can be typed - this list only feeds the dropdown suggestions.
+const ARK_MAPS = {
+  ASE: [
+    { v: "TheIsland",       n: "The Island" },
+    { v: "TheCenter",       n: "The Center" },
+    { v: "ScorchedEarth_P", n: "Scorched Earth" },
+    { v: "Ragnarok",        n: "Ragnarok" },
+    { v: "Aberration_P",    n: "Aberration" },
+    { v: "Extinction",      n: "Extinction" },
+    { v: "Valguero_P",      n: "Valguero" },
+    { v: "Genesis",         n: "Genesis: Part 1" },
+    { v: "CrystalIsles",    n: "Crystal Isles" },
+    { v: "Gen2",            n: "Genesis: Part 2" },
+    { v: "LostIsland",      n: "Lost Island" },
+    { v: "Fjordur",         n: "Fjordur" },
+  ],
+  ASA: [
+    { v: "TheIsland_WP",     n: "The Island" },
+    { v: "TheCenter_WP",     n: "The Center" },
+    { v: "ScorchedEarth_WP", n: "Scorched Earth" },
+    { v: "Ragnarok_WP",      n: "Ragnarok" },
+    { v: "Aberration_WP",    n: "Aberration" },
+    { v: "Extinction_WP",    n: "Extinction" },
+    { v: "Valguero_WP",      n: "Valguero" },
+    { v: "Astraeos_WP",      n: "Astraeos" },
+    { v: "LostColony_WP",    n: "Lost Colony" },
+    { v: "BobsMissions_WP",  n: "Club ARK" },
+  ],
+};
+
+const STUB_LOGS = [
+  { t: "18:42:07", c: "#3DDC84", m: "Updated Mod 895711211 (Awesome SpyGlass)", dbg: false },
+  { t: "18:42:01", c: "#ECF0F5", m: "Installed Mod 731604991 (Structures Plus)", dbg: false },
+  { t: "18:41:55", c: "#7FB0E8", m: "[steamcmd] Success. Downloaded item 731604991", dbg: true },
+  { t: "18:41:54", c: "#9AA6B4", m: "[debug] 2 active mods resolved, 1 update needed", dbg: true },
+  { t: "18:41:30", c: "#FF6B74", m: "RCON: saveworld timeout, proceeding", dbg: false },
+  { t: "18:41:12", c: "#ECF0F5", m: "Broadcast: server restart in 5 min", dbg: false },
+];
+
+// Ini-dump stubs for the browser preview (same shape as NATIVE.getIniDump):
+// order preserved, duplicate keys allowed (OverridePlayerLevelEngramPoints repeats).
+const STUB_INI_GUS = { sections: [
+  { name: "ServerSettings", entries: [
+    ["XPMultiplier", "2.0"], ["TamingSpeedMultiplier", "3.0"], ["HarvestAmountMultiplier", "2.0"],
+    ["ServerPVE", "True"], ["AllowThirdPersonPlayer", "True"], ["DifficultyOffset", "1.0"],
+    ["RCONEnabled", "True"], ["RCONPort", "27020"] ] },
+  { name: "SessionSettings", entries: [ ["SessionName", "My ARK Server"] ] },
+  { name: "MessageOfTheDay", entries: [ ["Message", "Welcome to the cluster!"], ["Duration", "30"] ] },
+] };
+const STUB_INI_GAME = { sections: [
+  { name: "/Script/ShooterGame.ShooterGameMode", entries: [
+    ["MatingIntervalMultiplier", "0.5"], ["BabyMatureSpeedMultiplier", "10.0"],
+    ["bDisableStructurePlacementCollision", "True"],
+    ["OverridePlayerLevelEngramPoints", "8"], ["OverridePlayerLevelEngramPoints", "8"],
+    ["OverridePlayerLevelEngramPoints", "12"] ] },
+] };
+
+// Native amucore bindings (Window.this.amu.*); null in the plain browser preview,
+// where the STUB_* data keeps the design preview working.
+const NATIVE = (typeof Window !== "undefined" && Window.this && Window.this.amu) ? Window.this.amu : null;
+
+function loadServers() {
+  if (NATIVE) {
+    try {
+      const arr = JSON.parse(NATIVE.getServers());
+      arr.forEach(s => { s.mods = null; });  // mods loaded lazily, per server
+      return arr;
+    } catch (e) { console.log("getServers failed: " + e); }
+  }
+  return STUB_SERVERS;
+}
+function loadLogs() {
+  if (NATIVE) {
+    try { return JSON.parse(NATIVE.getLogs(200)); } catch (e) { console.log("getLogs failed: " + e); }
+  }
+  return STUB_LOGS;
+}
+// Load (and cache on the object) a server's active-mod list. Native: one call per server.
+function ensureMods(s) {
+  if (s.mods) return s.mods;
+  if (NATIVE && s.id !== undefined && s.id !== null) {
+    try { s.mods = JSON.parse(NATIVE.getServerMods(s.id)); } catch (e) { console.log("getServerMods failed: " + e); }
+  }
+  if (!s.mods) s.mods = [];
+  return s.mods;
+}
+// Load (and cache on the object) a server's launch config. Native: one call per server.
+function ensureLaunch(s) {
+  if (s._lc) return s._lc;
+  if (NATIVE && s.id !== undefined && s.id !== null) {
+    try { s._lc = JSON.parse(NATIVE.getLaunchConfig(s.id)); }
+    catch (e) { console.log("getLaunchConfig failed: " + e); }
+  }
+  if (!s._lc) s._lc = Object.assign({}, STUB_LAUNCH);
+  return s._lc;
+}
+
+let servers = loadServers();
+let logs = loadLogs();
+
+const stateLabel = { ok: "Installed", inc: "Incomplete", no: "Not installed", rem: "Removed" };
+
+const stateTip = {
+  inc: "This mod is only partially installed - its files are present but the .mod metadata file is missing, so ARK won't load it. Run an update to complete it.",
+  rem: "This mod was removed or made private on the Steam Workshop, so it can no longer be downloaded. Remove it from this server's active mods.",
+};
+
+let cur = 0;          // current server
+let screen = "server";  // server | mods | config | logs | update - Server is the default view
+let selMod = 0;
+let showDebug = false;
+
+const $ = (sel, root) => (root || document).querySelector(sel);
+
+// The one open .combolist (Map dropdown); a click anywhere outside its .combo
+// closes it. Element handlers run first (bubbling), so opening via the caret
+// is not immediately undone by this document-level listener.
+let comboOpen = null;
+document.addEventListener("click", (e) => {
+  if (!comboOpen) return;
+  let n = e.target;
+  while (n) {
+    if (n === comboOpen.parentNode) return;  // click inside the owning .combo
+    n = n.parentNode;
+  }
+  comboOpen.style.display = "none";
+  comboOpen = null;
+});
+
+// Custom mouse-following tooltip (no title attribute; not clipped by the table).
+const tooltip = $("#tooltip");
+function attachTip(elem, text) {
+  if (!elem) return;
+  elem.addEventListener("mouseenter", () => { tooltip.textContent = text; tooltip.style.display = "block"; });
+  elem.addEventListener("mousemove", (e) => {
+    const x = (e.clientX !== undefined ? e.clientX : e.x);
+    const y = (e.clientY !== undefined ? e.clientY : e.y);
+    const tw = tooltip.offsetWidth || 260;
+    const th = tooltip.offsetHeight || 60;
+    const winW = window.innerWidth || document.body.offsetWidth || 1000;
+    const winH = window.innerHeight || document.body.offsetHeight || 700;
+    let left = x + 14;
+    let top = y + 18;
+    if (left + tw > winW - 8) left = x - tw - 14;  // flip to the left near the right edge
+    if (top + th > winH - 8) top = y - th - 14;    // flip above near the bottom edge
+    if (left < 8) left = 8;
+    if (top < 8) top = 8;
+    tooltip.style.left = left + "px";
+    tooltip.style.top = top + "px";
+  });
+  elem.addEventListener("mouseleave", () => { tooltip.style.display = "none"; });
+}
+
+function el(html) {
+  // No <template> element in Sciter - use a plain container.
+  const d = document.createElement("div");
+  d.innerHTML = html.trim();
+  const c = d.firstElementChild;
+  d.removeChild(c);
+  return c;
+}
+
+// Escape a value for use inside an HTML attribute (input values may contain quotes).
+const escAttr = v => String(v === undefined || v === null ? "" : v)
+  .replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+
+/* ---------- live server status (supervisor) ---------- */
+
+// Status key: native rows carry the DB id; stub rows fall back to the array index.
+const sid = (s, i) => (s && s.id !== undefined && s.id !== null) ? s.id : i;
+
+const lastStatus = {};   // serverId -> latest {id,state,desired,pid,failures,detail}
+let statusTimer = null;  // interval guard: the 2s poll is started exactly once
+
+function dotClass(st) {
+  if (!st) return "grey";
+  if (st.state === "running") return "green";
+  if (st.state === "starting" || st.state === "stopping") return "amber";
+  if (st.state === "crashed" || st.state === "failed") return "red";
+  return "grey";  // stopped / unknown
+}
+function dotClasses(st) {
+  const c = dotClass(st);
+  return "dot " + c + (c === "amber" ? " pulse" : "");
+}
+const stateNames = { stopped: "Stopped", starting: "Starting", running: "Running",
+                     stopping: "Stopping", crashed: "Crashed", failed: "Failed" };
+function stateSub(st) {
+  if (!st) return "no status yet";
+  if (st.state === "running") return st.pid ? "PID " + st.pid : "process up";
+  if (st.detail) return st.detail;
+  if ((st.state === "crashed" || st.state === "failed") && st.failures)
+    return st.failures + " failed restart" + (st.failures === 1 ? "" : "s");
+  if (st.state === "starting") return "waiting for process";
+  if (st.state === "stopping") return "graceful shutdown";
+  return "not running";
+}
+
+// Browser-preview stub: fake supervisor with timed transitions
+// (starting -> running after ~3s, stopping -> stopped; restart chains through both).
+const STUB_STATUS = {};  // id -> mutable stub state, seeded from the old "online" flag
+function stubStat(id, i) {
+  if (!STUB_STATUS[id]) {
+    const on = !!(servers[i] && servers[i].online);
+    STUB_STATUS[id] = { id, state: on ? "running" : "stopped", desired: on ? "running" : "stopped",
+                        pid: on ? 4000 + i : 0, failures: 0, detail: "", _t: 0 };
+  }
+  return STUB_STATUS[id];
+}
+function stubStatuses() {
+  const now = Date.now();
+  servers.forEach((s, i) => {
+    const st = stubStat(sid(s, i), i);
+    if (st.state === "starting" && now - st._t > 3000) {
+      st.state = "running"; st.pid = 4000 + i;
+    } else if (st.state === "stopping" && now - st._t > 3000) {
+      st.pid = 0;
+      if (st.desired === "running") { st.state = "starting"; st._t = now; }  // restart flow
+      else st.state = "stopped";
+    }
+  });
+  return Object.values(STUB_STATUS).map(st => ({ id: st.id, state: st.state, desired: st.desired,
+                                                 pid: st.pid, failures: st.failures, detail: st.detail }));
+}
+
+function pollStatuses() {
+  let arr = null;
+  if (NATIVE) {
+    try { arr = JSON.parse(NATIVE.getStatuses()); } catch (e) { console.log("getStatuses failed: " + e); }
+  } else {
+    arr = stubStatuses();
+  }
+  if (!arr) return;
+  for (const st of arr) lastStatus[st.id] = st;
+  paintSidebarDots();
+  if (screen === "server") paintStatusCard();
+}
+function startStatusPolling() {
+  if (statusTimer) return;  // never stack intervals
+  statusTimer = setInterval(pollStatuses, 2000);
+}
+
+// Repaint only the sidebar dots in place (no DOM rebuild every 2s).
+function paintSidebarDots() {
+  const rows = $("#servers").children;
+  for (let i = 0; i < rows.length && i < servers.length; i++) {
+    const dot = $(".dot", rows[i]);
+    if (dot) dot.className = dotClasses(lastStatus[sid(servers[i], i)]);
+  }
+}
+function paintStatusCard() {
+  const card = $("#statuscard");
+  if (!card || !servers[cur]) return;
+  const st = lastStatus[sid(servers[cur], cur)];
+  card.innerHTML = `<div class="${dotClasses(st)}"></div>
+      <div class="scol"><div class="slabel">${st ? (stateNames[st.state] || st.state) : "Unknown"}</div>
+      <div class="ssub">${stateSub(st)}</div></div>`;
+}
+
+// Start/Stop/Restart: fire-and-forget native call (the supervisor only flips
+// desired-state), optimistic local repaint, then the 2s poll takes over.
+function doServerAction(s, i, what) {
+  const id = sid(s, i);
+  if (NATIVE) {
+    try {
+      if (what === "start") NATIVE.startServer(s.id);
+      else if (what === "stop") NATIVE.stopServer(s.id);
+      else NATIVE.restartServer(s.id);
+    } catch (e) { console.log(what + " failed: " + e); }
+  } else {
+    const st = stubStat(id, i);
+    st._t = Date.now();
+    if (what === "start") { st.state = "starting"; st.desired = "running"; }
+    else if (what === "stop") { if (st.state !== "stopped") st.state = "stopping"; st.desired = "stopped"; }
+    else { st.state = (st.state === "stopped") ? "starting" : "stopping"; st.desired = "running"; }
+  }
+  const prev = lastStatus[id] || { id, pid: 0, failures: 0, detail: "" };
+  const opt = Object.assign({}, prev);
+  if (what === "start") { opt.state = "starting"; opt.desired = "running"; }
+  else if (what === "stop") { opt.state = "stopping"; opt.desired = "stopped"; }
+  else { opt.state = "stopping"; opt.desired = "running"; }
+  lastStatus[id] = opt;
+  paintSidebarDots();
+  paintStatusCard();
+}
+
+/* ---------- mod update run (orchestrator) ---------- */
+
+let updTimer = null;   // 1s status poll, alive only while the update screen is shown
+let updTarget = null;  // { serverId, note } of the run the screen was opened for
+
+// Browser-preview stub: a time-scripted fake update run so the screen is fully
+// previewable (collect -> download w/ lines -> 5s countdown -> install -> done).
+let STUB_UPD = null;   // { t0, ids } - everything else derives from elapsed time
+function stubStartUpdate(serverId, onlyModId) {
+  if (STUB_UPD && stubUpdStatus().running) return false;
+  const ids = [];
+  servers.forEach((sv, i) => {
+    if (serverId !== -1 && sid(sv, i) !== serverId) return;
+    (sv.mods || []).forEach(m => {
+      if ((onlyModId === "" || m.id === onlyModId) && ids.indexOf(m.id) < 0) ids.push(m.id);
+    });
+  });
+  STUB_UPD = { t0: Date.now(), ids };
+  return true;
+}
+// Stub timeline (seconds): 0-1 collect, then 1s download per mod, 5s countdown,
+// 1s install per mod, done. Lines accumulate along the walked timeline.
+function stubUpdStatus() {
+  if (!STUB_UPD) return { running: false, phase: "idle", countdownSecs: -1, mods: [], lines: [] };
+  const u = STUB_UPD;
+  const t = (Date.now() - u.t0) / 1000;
+  const n = u.ids.length;
+  const dl0 = 1, cd0 = dl0 + n, in0 = cd0 + 5, done0 = in0 + n;
+  const lines = ["Collecting active mods..."];
+  const mods = u.ids.map(id => ({ id, status: "Waiting" }));
+  let phase = "collect", countdownSecs = -1, running = true;
+  if (t >= dl0) {
+    phase = "download";
+    lines.push(n + " mod" + (n === 1 ? "" : "s") + " queued for steamcmd");
+    u.ids.forEach((id, i) => {
+      const dt = t - dl0 - i;
+      if (dt >= 0) { mods[i].status = "Downloading..."; lines.push("Downloading item " + id + " ..."); }
+      if (dt >= 1) { mods[i].status = "Downloaded"; lines.push("Success. Downloaded item " + id); }
+    });
+  }
+  if (t >= cd0) {
+    phase = "countdown";
+    countdownSecs = Math.ceil(in0 - t);
+    lines.push("Broadcast: server restarts for a mod update");
+  }
+  if (t >= in0) {
+    phase = "install";
+    countdownSecs = -1;
+    lines.push("Saving world + stopping server...");
+    u.ids.forEach((id, i) => {
+      const dt = t - in0 - i;
+      if (dt >= 0) { mods[i].status = "Installing..."; lines.push("Installing mod " + id + " ..."); }
+      if (dt >= 1) { mods[i].status = "Updated"; lines.push("Updated mod " + id); }
+    });
+  }
+  if (t >= done0) {
+    phase = "done";
+    running = false;
+    lines.push("Restarting server...");
+    lines.push("Update run finished.");
+  }
+  return { running, phase, countdownSecs, mods, lines };
+}
+function stubSkipCountdown() {
+  if (!STUB_UPD) return false;
+  const n = STUB_UPD.ids.length;
+  const cd0 = 1 + n, in0 = cd0 + 5;
+  const t = (Date.now() - STUB_UPD.t0) / 1000;
+  if (t >= cd0 && t < in0) STUB_UPD.t0 -= (in0 - t) * 1000;  // jump past the countdown
+  return true;
+}
+
+function loadUpdateStatus() {
+  if (NATIVE) {
+    try { return JSON.parse(NATIVE.getUpdateStatus()); }
+    catch (e) { console.log("getUpdateStatus failed: " + e); }
+    return { running: false, phase: "error", countdownSecs: -1, mods: [], lines: [] };
+  }
+  return stubUpdStatus();
+}
+
+// Kick off a run and switch to the update screen. A false return from
+// startUpdate means a run is already in progress - the screen then simply
+// shows that running run, with an inline note.
+function startUpdateRun(serverId, onlyModId) {
+  let ok = false;
+  if (NATIVE) {
+    try { ok = NATIVE.startUpdate(serverId, onlyModId); }
+    catch (e) { console.log("startUpdate failed: " + e); }
+  } else {
+    ok = stubStartUpdate(serverId, onlyModId);
+  }
+  updTarget = { serverId, note: ok ? "" : "An update is already running - showing the running update." };
+  screen = "update";
+  render();
+}
+
+function startUpdPolling() {
+  if (updTimer) return;  // never stack intervals
+  updTimer = setInterval(paintUpdate, 1000);
+}
+function stopUpdPolling() {
+  if (updTimer) { clearInterval(updTimer); updTimer = null; }
+}
+
+const updPhaseNames = { idle: "Idle", collect: "Collecting mods", download: "Downloading",
+                        install: "Installing", countdown: "Restart countdown",
+                        done: "Done", error: "Error" };
+function fmtMMSS(secs) {
+  const m = Math.floor(secs / 60), s = secs % 60;
+  return (m < 10 ? "0" : "") + m + ":" + (s < 10 ? "0" : "") + s;
+}
+// Row color from the ModProgress status text (see orchestrator.h):
+// Updated/Installed = accent, Error*/Removed* = danger, Up to date = muted.
+function updModColor(status) {
+  const s = String(status).toLowerCase();
+  if (s.indexOf("error") === 0 || s.indexOf("removed") === 0) return "var(--danger)";
+  if (s === "updated" || s === "installed") return "var(--accent)";
+  if (s === "up to date") return "var(--muted)";
+  return "var(--text)";
+}
+
+// Repaint the update screen in place (no DOM rebuild every second).
+function paintUpdate() {
+  const bar = $(".updbar");
+  if (!bar) { stopUpdPolling(); return; }  // screen gone - defensive
+  const st = loadUpdateStatus();
+
+  const ph = $(".u-phase", bar);
+  ph.textContent = updPhaseNames[st.phase] || st.phase || "";
+  // badge coloring: error -> red, done -> green, running phases -> neutral
+  ph.className = "updphase u-phase pill " +
+      (st.phase === "error" ? "rem" : st.phase === "done" ? "ok" : "no");
+  const cd = (st.countdownSecs !== undefined && st.countdownSecs !== null) ? st.countdownSecs : -1;
+  const cnt = $(".u-count", bar);
+  cnt.style.display = cd >= 0 ? "block" : "none";
+  if (cd >= 0) cnt.textContent = fmtMMSS(cd);
+  $(".u-skip", bar).style.display = cd >= 0 ? "inline-block" : "none";
+  $(".u-back", bar).style.display = st.running ? "none" : "inline-block";
+
+  // console (newest LAST): only touch the DOM when the text changed, then pin to bottom
+  const box = $("#updbox");
+  const txt = (st.lines || []).join("\n");
+  if (box && box._txt !== txt) {
+    box._txt = txt;
+    box.textContent = txt;  // textContent: no HTML injection from steamcmd output
+    box.scrollTop = box.scrollHeight;
+  }
+
+  // per-mod status strip
+  const strip = $("#updmods");
+  const key = (st.mods || []).map(m => m.id + "=" + m.status).join(";");
+  if (strip && strip._key !== key) {
+    strip._key = key;
+    strip.innerHTML = "";
+    (st.mods || []).forEach(m => {
+      const r = el(`<div class="updrow"><div class="uid">${m.id}</div><div class="ust"></div></div>`);
+      const u = $(".ust", r);
+      u.textContent = m.status;
+      u.style.color = updModColor(m.status);
+      strip.appendChild(r);
+    });
+    if (!(st.mods || []).length)
+      strip.appendChild(el(`<div class="updrow" style="color:#93A0AE">No mods in this run yet.</div>`));
+  }
+
+  if (!st.running) stopUpdPolling();  // done/error: last paint stays, Back is visible
+  return st;
+}
+
+function renderUpdate(host) {
+  let name = "All servers";
+  if (updTarget && updTarget.serverId !== -1) {
+    const sv = servers.find((x, i) => sid(x, i) === updTarget.serverId);
+    if (sv) name = sv.name;
+  }
+  host.appendChild(el(`<div class="crumb">Updating: <b>${name}</b></div>`));
+  if (updTarget && updTarget.note)
+    host.appendChild(el(`<div class="updnote">${updTarget.note}</div>`));
+
+  const bar = el(`<div class="updbar">
+      <div class="updphase u-phase"></div>
+      <div class="updcount u-count" style="display:none"></div>
+      <button class="u-skip" style="display:none">Skip Countdown</button>
+      <div class="grow"></div>
+      <button class="u-back" style="display:none">Back</button></div>`);
+  $(".u-skip", bar).addEventListener("click", () => {
+    if (NATIVE) {
+      try { NATIVE.skipUpdateCountdown(); } catch (e) { console.log("skipUpdateCountdown failed: " + e); }
+    } else {
+      stubSkipCountdown();
+    }
+    paintUpdate();  // reflect the skip right away, not at the next tick
+  });
+  $(".u-back", bar).addEventListener("click", () => {
+    stopUpdPolling();
+    if (NATIVE) servers = loadServers();  // fresh rows, mods=null -> statuses refetch
+    screen = "mods";
+    render();
+  });
+  host.appendChild(bar);
+  host.appendChild(el(`<div id="updbox"></div>`));
+  host.appendChild(el(`<div id="updmods"></div>`));
+
+  const st = paintUpdate();
+  if (st && st.running) startUpdPolling();
+}
+
+function renderSidebar() {
+  const host = $("#servers");
+  host.innerHTML = "";
+  // On the system screens (logs/add-server/settings) no server row is active.
+  const sysScreen = (screen === "logs" || screen === "addserver" || screen === "settings");
+  servers.forEach((s, i) => {
+    const active = !sysScreen && cur === i;
+    const count = (s.modCount !== undefined) ? s.modCount : (s.mods ? s.mods.length : 0);
+    const n = el(`<div class="nav ${active ? "active" : ""}">
+        <div class="${dotClasses(lastStatus[sid(s, i)])}"></div><div class="nname">${s.name}</div>
+        <div class="badge">${count}</div></div>`);
+    n.addEventListener("click", () => { cur = i; screen = "server"; selMod = 0; render(); });
+    host.appendChild(n);
+  });
+  $("#navlogs").classList.toggle("active", screen === "logs");
+  $("#addserver").classList.toggle("active", screen === "addserver");
+  $("#navsettings").classList.toggle("active", screen === "settings");
+}
+
+function renderMods(host) {
+  const s = servers[cur];
+  const list = ensureMods(s);
+  if (selMod >= list.length) selMod = 0;
+  host.appendChild(el(`<div class="crumb">Mods from: <b>${s.name}</b></div>`));
+
+  const wrap = el(`<div id="modswrap"></div>`);
+  const table = el(`<div id="modtable"></div>`);
+  table.appendChild(el(`<div class="thead"><div class="c-thumb"></div><div class="c-id">ID</div>
+      <div class="c-status">Status</div><div class="c-name">Name</div></div>`));
+  list.forEach((m, i) => {
+    // Real workshop mini-thumbnail when a preview URL is cached; grey box otherwise.
+    const thumb = (m.preview && String(m.preview).indexOf("http") === 0)
+      ? `<img class="tmb" src="${escAttr(m.preview)}">` : `<div class="box"></div>`;
+    const r = el(`<div class="trow ${i === selMod ? "sel" : ""} ${m.state === "rem" ? "removedrow" : ""}">
+        <div class="c-thumb">${thumb}</div><div class="c-id">${m.id}</div>
+        <div class="c-status"><span class="pill ${m.state}">${stateLabel[m.state]}</span></div>
+        <div class="c-name">${m.name}</div></div>`);
+    const im = $(".tmb", r);
+    if (im) im.addEventListener("error", () => { im.parentNode.innerHTML = '<div class="box"></div>'; });
+    r.addEventListener("click", () => { selMod = i; render(); });
+    table.appendChild(r);
+    if (stateTip[m.state]) attachTip($(".pill", r), stateTip[m.state]);
+  });
+  if (!list.length) {
+    table.appendChild(el(`<div class="trow" style="cursor:default;color:#93A0AE">
+        <div class="c-thumb"></div><div style="padding:6px 0">No active mods on this server.</div></div>`));
+  }
+  wrap.appendChild(table);
+
+  if (list.length) {
+    const m = list[selMod];
+    const pv = el(`<div id="preview">
+        <div class="img">no preview yet</div>
+        <h3>${m.name}</h3><div class="id">ID ${m.id}</div>
+        <div class="kv"><div class="k">Status</div><span class="pill ${m.state}">${stateLabel[m.state]}</span></div>
+        <div class="kv"><div class="k">Size</div><span>${m.size}</span></div>
+        <div class="kv"><div class="k">Updated</div><span>${m.updated}</span></div>
+        <div style="margin-top:10px"><a class="ws">View on Workshop</a></div></div>`);
+    $(".ws", pv).addEventListener("click", () => openExternal(URL_WS + m.id));
+    if (stateTip[m.state]) attachTip($(".pill", pv), stateTip[m.state]);
+    // Workshop preview image: only for http(s) URLs; on a load error swap back
+    // to the "no preview" text (Sciter fires an error event on img like browsers).
+    const purl = String(m.preview || "");
+    if (purl.indexOf("http://") === 0 || purl.indexOf("https://") === 0) {
+      const imgBox = $(".img", pv);
+      const img = el(`<img src="${escAttr(purl)}" style="width:100%;height:130px;border-radius:8px">`);
+      img.addEventListener("error", () => { imgBox.innerHTML = ""; imgBox.textContent = "no preview yet"; });
+      imgBox.textContent = "";
+      imgBox.appendChild(img);
+    }
+    wrap.appendChild(pv);
+  } else {
+    wrap.appendChild(el(`<div id="preview"><div class="img">no preview</div>
+        <h3>No mods</h3><div class="id">Set ActiveMods in GameUserSettings.ini or add one below.</div></div>`));
+  }
+  host.appendChild(wrap);
+
+  // Inline Add-Mod row (hidden until "Add Mod" is clicked), above the actions.
+  const addrow = el(`<div class="actions addmodrow" style="display:none">
+      <input|text class="am-id" placeholder="Workshop mod id">
+      <button class="primary am-ok">Add</button>
+      <button class="am-cancel">Cancel</button>
+      <span class="am-note"></span></div>`);
+  const idInp = $(".am-id", addrow);
+  const note = $(".am-note", addrow);
+  idInp.addEventListener("input", () => {
+    // digits only (Workshop ids are numeric)
+    const v = String(idInp.value !== undefined && idInp.value !== null ? idInp.value : "");
+    let out = "";
+    for (let i = 0; i < v.length; i++) if (v[i] >= "0" && v[i] <= "9") out += v[i];
+    if (out !== v) idInp.value = out;
+  });
+  $(".am-cancel", addrow).addEventListener("click", () => {
+    addrow.style.display = "none";
+    idInp.value = "";
+    note.textContent = "";
+  });
+  $(".am-ok", addrow).addEventListener("click", () => {
+    const id = String(idInp.value !== undefined && idInp.value !== null ? idInp.value : "").trim();
+    if (!id) { note.textContent = "Enter a Workshop mod id."; return; }
+    let res = null;
+    if (NATIVE) {
+      try { res = JSON.parse(NATIVE.addMod(s.id, id)); }
+      catch (e) { console.log("addMod failed: " + e); note.textContent = "Add failed - see logs."; return; }
+    } else {
+      // stub: mutate the stub mod array so the preview works
+      if (list.some(m => m.id === id)) {
+        res = { ok: false, already: true, name: "", available: true };
+      } else {
+        list.push({ id, name: "Mod " + id, state: "no", size: "-", updated: "-" });
+        res = { ok: true, already: false, name: "Mod " + id, available: true };
+      }
+    }
+    if (res.already) { note.textContent = "Mod " + id + " is already active on this server."; return; }
+    if (!res.ok) { note.textContent = "Could not add mod " + id + "."; return; }
+    if (NATIVE) { s.mods = null; servers = loadServers(); }  // refetch list + sidebar count
+    render();
+  });
+  host.appendChild(addrow);
+
+  const act = el(`<div class="actions">
+      <button class="primary b-updall">Update all Mods</button>
+      <button class="b-updsel">Update selected</button>
+      <button class="b-addmod">Add Mod</button>
+      <button class="b-remmod">Remove Mod</button></div>`);
+  $(".b-updall", act).addEventListener("click", () => startUpdateRun(s.id, ""));
+  $(".b-updsel", act).addEventListener("click", () => {
+    const m = list[selMod];
+    if (m) startUpdateRun(s.id, m.id);
+  });
+  $(".b-addmod", act).addEventListener("click", () => {
+    addrow.style.display = (addrow.style.display === "none") ? "block" : "none";
+    note.textContent = "";
+  });
+  // Remove with the same two-click confirm pattern as the server Delete button.
+  const rb = $(".b-remmod", act);
+  rb.addEventListener("click", () => {
+    const m = list[selMod];
+    if (!m) return;
+    if (!rb._armed) {
+      rb._armed = true;
+      rb.textContent = "Really remove?";
+      setTimeout(() => { if (rb._armed) { rb._armed = false; rb.textContent = "Remove Mod"; } }, 3000);
+      return;
+    }
+    rb._armed = false;
+    if (NATIVE) {
+      try { NATIVE.removeMod(s.id, m.id); } catch (e) { console.log("removeMod failed: " + e); }
+      s.mods = null;
+      servers = loadServers();
+    } else {
+      const i = list.indexOf(m);
+      if (i >= 0) list.splice(i, 1);
+    }
+    selMod = 0;
+    render();
+  });
+  host.appendChild(act);
+}
+
+/* ---------- shared form widgets (server screen + add-server screen) ---------- */
+
+// ASE/ASA pill pair: returns a curGame() getter; onChange fires after a switch.
+function wireGamePills(gp, onChange) {
+  const pick = (i) => {
+    gp.children[i].classList.add("active");
+    gp.children[1 - i].classList.remove("active");
+    if (onChange) onChange();
+  };
+  gp.children[0].addEventListener("click", () => pick(0));
+  gp.children[1].addEventListener("click", () => pick(1));
+  attachTip(gp.children[0],
+    "ARK: Survival Evolved - the classic ARK (2015).\n" +
+    "Server exe: ShooterGameServer.exe - mods from the Steam Workshop " +
+    "(AMU installs and updates them via SteamCMD).");
+  attachTip(gp.children[1],
+    "ARK: Survival Ascended - the Unreal Engine 5 remake (2023).\n" +
+    "Server exe: ArkAscendedServer.exe - maps use the _WP suffix; mods come " +
+    "from CurseForge (AMU mod updates currently cover ASE only).");
+  return () => (gp.children[1].classList.contains("active") ? "ASA" : "ASE");
+}
+
+// Map combobox on a .combo element: suggestions from ARK_MAPS[curGame()], free
+// text stays allowed (mod/custom maps). The caret shows the full list, typing
+// filters it live. Returns { input, list, fill } so callers can refilter.
+function wireMapCombo(combo, curGame) {
+  // Sciter: <input|text> IS an <input>. A plain browser parses it as a literal
+  // "input|text" element instead, so fall back to a tag-prefix scan there -
+  // without it the first render() throws and the whole preview dies.
+  let input = $("input", combo);
+  if (!input)
+    for (const n of combo.querySelectorAll("*"))
+      if (String(n.tagName).toLowerCase().indexOf("input") === 0) { input = n; break; }
+  const list = $(".combolist", combo);
+  const fill = (filter) => {
+    const f = (filter || "").toLowerCase();
+    const maps = (ARK_MAPS[curGame()] || []).filter(
+      m => !f || m.v.toLowerCase().includes(f) || m.n.toLowerCase().includes(f));
+    list.innerHTML = "";
+    if (!maps.length) {
+      list.appendChild(el(`<div class="cempty">No matching official map - a custom/mod map name is fine.</div>`));
+      return;
+    }
+    maps.forEach(m => {
+      const o = el(`<div class="copt"><div>${m.v}</div><div class="cn">${m.n}</div></div>`);
+      o.addEventListener("click", () => {
+        input.value = m.v;
+        list.style.display = "none";
+        comboOpen = null;
+      });
+      list.appendChild(o);
+    });
+  };
+  $(".caret", combo).addEventListener("click", () => {
+    if (list.style.display === "none") {
+      fill("");  // caret shows the full list, unfiltered
+      list.style.display = "block";
+      comboOpen = list;
+    } else {
+      list.style.display = "none";
+      comboOpen = null;
+    }
+  });
+  input.addEventListener("input", () => {
+    // Typing filters the list live (and opens it on first keystroke).
+    fill(String(input.value || ""));
+    list.style.display = "block";
+    comboOpen = list;
+  });
+  return { input, list, fill };
+}
+
+// Input value with a browser-preview fallback: unknown <input|*> elements in a
+// plain browser have no .value property, only the value attribute.
+function inpVal(inp) {
+  if (!inp) return "";
+  return (inp.value !== undefined && inp.value !== null)
+    ? String(inp.value) : (inp.getAttribute("value") || "");
+}
+
+function renderServer(host) {
+  const s = servers[cur];
+  const lc = ensureLaunch(s);
+  const idLabel = (s.id !== undefined && s.id !== null) ? s.id : cur + 1;
+
+  // crumb row with the live status card on the right (painted by paintStatusCard)
+  host.appendChild(el(`<div class="crumbrow">
+      <div class="crumb">${s.name} <span style="color:#9AA6B4">- ID ${idLabel}</span></div>
+      <div class="grow"></div>
+      <div id="statuscard"></div></div>`));
+  paintStatusCard();
+
+  const form = el(`<div class="form">
+    <div class="colw">
+      <div class="field"><label>Name</label><input|text class="f-name" value="${escAttr(s.name)}"></div>
+      <div class="field"><label>Path</label><input|text class="f-path" value="${escAttr(s.path)}"></div>
+      <div class="field"><label>Map</label>
+        <div class="combo">
+          <input|text class="f-map" value="${escAttr(s.map)}">
+          <div class="caret"><div class="b1"></div><div class="b2"></div><div class="b3"></div><div class="b4"></div></div>
+          <div class="combolist" style="display:none"></div>
+        </div></div>
+    </div>
+    <div class="colw">
+      <div class="field"><label>Game</label>
+        <div class="pills gamesel">
+          <span class="${lc.game === "ASA" ? "" : "active"}">ASE</span>
+          <span class="${lc.game === "ASA" ? "active" : ""}">ASA</span></div></div>
+      <div class="field"><label>Session Name</label><input|text class="f-session" value="${escAttr(lc.sessionName)}"></div>
+      <div class="fieldrow">
+        <div class="field half"><label>Game Port</label><input|text class="f-gport" value="${escAttr(lc.gamePort)}"></div>
+        <div class="field half"><label>Query Port</label><input|text class="f-qport" value="${escAttr(lc.queryPort)}"></div>
+        <div class="field half"><label>RCON Port</label><input|text class="f-rport" value="${escAttr(lc.rconPort)}"></div>
+      </div>
+    </div></div>`);
+  const gp = $(".gamesel", form);
+  // Map combobox + ASE/ASA pills via the shared helpers; when the suggestion
+  // list is open, a game switch refills it (the list follows the game).
+  let mc;
+  const curGame = wireGamePills(gp, () => { if (mc.list.style.display !== "none") mc.fill(""); });
+  mc = wireMapCombo($(".combo", form), curGame);
+  host.appendChild(form);
+
+  const blk = el(`<div class="block">
+    <div class="blabel">LAUNCH OPTIONS</div>
+    <div class="fieldrow">
+      <div class="field half"><label>Max Players</label><input|text class="f-maxplayers" value="${escAttr(lc.maxPlayers)}"></div>
+      <div class="field wide"><label>Extra Args <span class="qmark">(?)</span></label><input|text class="f-extra" value="${escAttr(lc.extraArgs)}"></div>
+    </div>
+    <div class="toggles">
+      <div class="toggle t-autorestart ${lc.autoRestart ? "on" : ""}"><div class="box"></div><span>Auto-restart on crash</span></div>
+      <div class="toggle t-battleye ${lc.battleye ? "on" : ""}"><div class="box"></div><span>BattlEye</span></div>
+      <div class="toggle t-crossplay ${lc.crossplay ? "on" : ""}"><div class="box"></div><span>Crossplay</span></div>
+      <div class="toggle t-autostart ${lc.autoStart ? "on" : ""}"><div class="box"></div><span>Start with AMU</span></div>
+    </div>
+    <div class="muted-note">RCON ${lc.rconEnabled ? "enabled" : "disabled"} - IP ${s.rconIp || "(MultiHome not set)"} - RCONEnabled/MultiHome via GameUserSettings.ini or the Config tab</div>
+  </div>`);
+  attachTip($(".qmark", blk), "Extra command-line arguments appended verbatim to the launch " +
+    "command, after the arguments AMU builds (map, session, ports, mods).");
+  attachTip($(".t-autostart", blk), "Starts this server automatically when AMU launches.");
+  for (const t of blk.querySelectorAll(".toggle"))
+    t.addEventListener("click", () => t.classList.toggle("on"));
+  host.appendChild(blk);
+
+  const act = el(`<div class="actions">
+      <button class="primary b-start">Start</button>
+      <button class="b-stop">Stop</button>
+      <button class="b-restart">Restart</button>
+      <div class="sep"></div>
+      <button class="b-save">Save Server</button>
+      <button class="danger b-del">Delete</button></div>`);
+
+  $(".b-start", act).addEventListener("click", () => doServerAction(s, cur, "start"));
+  $(".b-stop", act).addEventListener("click", () => doServerAction(s, cur, "stop"));
+  $(".b-restart", act).addEventListener("click", () => doServerAction(s, cur, "restart"));
+
+  $(".b-save", act).addEventListener("click", () => {
+    // Read current values from the DOM at click time.
+    const val = sel => inpVal($(sel, host));
+    const num = sel => { const n = parseInt(val(sel), 10); return isNaN(n) ? 0 : n; };
+    const server = { name: val(".f-name"), path: val(".f-path"), map: val(".f-map") };
+    const launch = {
+      game: curGame(),
+      sessionName: val(".f-session"),
+      gamePort: num(".f-gport"), queryPort: num(".f-qport"), rconPort: num(".f-rport"),
+      maxPlayers: num(".f-maxplayers"),
+      extraArgs: val(".f-extra"),
+      autoRestart: $(".t-autorestart", blk).classList.contains("on"),
+      battleye: $(".t-battleye", blk).classList.contains("on"),
+      crossplay: $(".t-crossplay", blk).classList.contains("on"),
+      autoStart: $(".t-autostart", blk).classList.contains("on") ? 1 : 0,
+    };
+    if (NATIVE) {
+      // Native side takes plain JS objects, NOT JSON strings.
+      try {
+        NATIVE.saveServer(s.id, server);
+        NATIVE.saveLaunchConfig(s.id, launch);
+      } catch (e) { console.log("save failed: " + e); }
+      s._lc = null;             // drop the cache; the reload re-fetches
+      servers = loadServers();
+    } else {
+      Object.assign(s, server);
+      s._lc = launch;           // stub: keep the edits in the cache
+    }
+    render();
+  });
+
+  // Delete with an inline confirm step (no native popups): first click arms
+  // the button as "Really delete?" for 3s, the second click deletes.
+  const db = $(".b-del", act);
+  db.addEventListener("click", () => {
+    if (!db._armed) {
+      db._armed = true;
+      db.textContent = "Really delete?";
+      setTimeout(() => { if (db._armed) { db._armed = false; db.textContent = "Delete"; } }, 3000);
+      return;
+    }
+    db._armed = false;
+    if (NATIVE) {
+      try { NATIVE.deleteServerById(s.id); } catch (e) { console.log("deleteServerById failed: " + e); }
+      servers = loadServers();
+    } else {
+      const i = servers.indexOf(s);
+      if (i >= 0) servers.splice(i, 1);
+    }
+    cur = 0;
+    screen = "mods";
+    render();
+  });
+  host.appendChild(act);
+}
+
+/* ---------- add-server screen ---------- */
+
+function renderAddServer(host) {
+  host.appendChild(el(`<div class="crumb">Add Server</div>`));
+
+  const form = el(`<div class="form">
+    <div class="colw">
+      <div class="field"><label>Name</label><input|text class="a-name" value=""></div>
+      <div class="field"><label>Path</label><input|text class="a-path" value="">
+        <div class="fhint">ARK install root - the folder that contains ShooterGame\\Binaries\\Win64\\...</div></div>
+      <div class="field"><label>Map</label>
+        <div class="combo">
+          <input|text class="a-map" value="">
+          <div class="caret"><div class="b1"></div><div class="b2"></div><div class="b3"></div><div class="b4"></div></div>
+          <div class="combolist" style="display:none"></div>
+        </div></div>
+    </div>
+    <div class="colw">
+      <div class="field"><label>Game</label>
+        <div class="pills gamesel">
+          <span class="active">ASE</span>
+          <span>ASA</span></div></div>
+    </div></div>`);
+  const gp = $(".gamesel", form);
+  let mc;
+  const curGame = wireGamePills(gp, () => { if (mc.list.style.display !== "none") mc.fill(""); });
+  mc = wireMapCombo($(".combo", form), curGame);
+  host.appendChild(form);
+
+  const note = el(`<div class="formnote"></div>`);
+  const showNote = (txt) => { note.textContent = txt; note.style.display = "block"; };
+  host.appendChild(note);
+
+  const act = el(`<div class="actions">
+      <button class="primary a-create">Create Server</button>
+      <button class="a-cancel">Cancel</button></div>`);
+  $(".a-cancel", act).addEventListener("click", () => { screen = "server"; render(); });
+  $(".a-create", act).addEventListener("click", () => {
+    const obj = {
+      name: inpVal($(".a-name", form)).trim(),
+      path: inpVal($(".a-path", form)).trim(),
+      map: inpVal($(".a-map", form)).trim(),
+      game: curGame(),
+    };
+    if (!obj.name || !obj.path) { showNote("Name and Path are required."); return; }
+    let res = null;
+    if (NATIVE) {
+      try { res = JSON.parse(NATIVE.addServer(obj)); }
+      catch (e) { console.log("addServer failed: " + e); showNote("Create failed - see logs."); return; }
+    } else {
+      // stub: duplicate check + append, so the preview flow is fully walkable
+      if (STUB_SERVERS.some(sv => String(sv.path).toLowerCase() === obj.path.toLowerCase())) {
+        res = { ok: false, id: 0, error: "duplicate" };
+      } else {
+        const id = STUB_SERVERS.reduce((m, sv) => Math.max(m, sv.id || 0), 0) + 1;
+        STUB_SERVERS.push({ id, name: obj.name, map: obj.map, path: obj.path,
+                            rconIp: "", rconPort: "", online: false, mods: [] });
+        res = { ok: true, id, error: "" };
+      }
+    }
+    if (res.ok) {
+      servers = loadServers();
+      const idx = servers.findIndex((x, i) => sid(x, i) === res.id);
+      cur = idx >= 0 ? idx : 0;
+      selMod = 0;
+      screen = "server";
+      render();
+      return;
+    }
+    // Errors do not block a retry - the form keeps its values.
+    if (res.error === "exe-not-found")
+      showNote("ShooterGameServer.exe / ArkAscendedServer.exe not found under " +
+               obj.path + "\\ShooterGame\\Binaries\\Win64");
+    else if (res.error === "duplicate")
+      showNote("This path is already configured.");
+    else
+      showNote("Could not create the server" + (res.error ? ": " + res.error : "") + ".");
+  });
+  host.appendChild(act);
+}
+
+/* ---------- settings screen ---------- */
+
+// Browser-preview stub for the global steamcmd login settings.
+const STUB_GSET = { anonymous: true, user: "", passSet: false, guardSet: false };
+
+function loadGlobalSettings() {
+  if (NATIVE) {
+    try { return JSON.parse(NATIVE.getGlobalSettings()); }
+    catch (e) { console.log("getGlobalSettings failed: " + e); }
+    return { anonymous: true, user: "", passSet: false, guardSet: false };
+  }
+  return Object.assign({}, STUB_GSET);
+}
+function loadAppInfo() {
+  if (NATIVE) {
+    try { return JSON.parse(NATIVE.getAppInfo()); }
+    catch (e) { console.log("getAppInfo failed: " + e); }
+    return { version: "", sciter: "" };
+  }
+  return { version: "2.0.0-dev", sciter: "" };
+}
+
+/* ---------- app update check (About row + startup banner) ---------- */
+
+// Browser-preview stub: checkAppUpdate flips it to "checking", ~2s later the
+// check "resolves" to an available fake 9.9.9 - so the whole cycle is previewable.
+const STUB_UPDATECHECK = { state: "idle", current: "2.0.0-dev", latest: "", error: "", _t: 0 };
+function stubCheckAppUpdate() {
+  STUB_UPDATECHECK.state = "checking";
+  STUB_UPDATECHECK._t = Date.now();
+  return true;
+}
+function stubUpdateCheck() {
+  const u = STUB_UPDATECHECK;
+  if (u.state === "checking" && Date.now() - u._t > 2000) { u.state = "available"; u.latest = "9.9.9"; }
+  return { state: u.state, current: u.current, latest: u.latest, error: u.error };
+}
+
+// Non-blocking snapshot of the background update check (states: idle | checking
+// | uptodate | available | error; the check itself runs on a native thread).
+function loadUpdateCheck() {
+  if (NATIVE) {
+    try { return JSON.parse(NATIVE.getUpdateCheck()); }
+    catch (e) { console.log("getUpdateCheck failed: " + e); }
+    return { state: "error", current: "", latest: "", error: "bindings unavailable" };
+  }
+  return stubUpdateCheck();
+}
+// Kick a re-check; the result arrives via getUpdateCheck polling.
+function kickUpdateCheck() {
+  if (NATIVE) {
+    try { return !!NATIVE.checkAppUpdate(); }
+    catch (e) { console.log("checkAppUpdate failed: " + e); }
+    return false;
+  }
+  return stubCheckAppUpdate();
+}
+// Launch lib\amu_updater.exe - the app then closes itself. False = updater exe
+// missing or no update available. The browser preview never launches anything.
+function launchInstall() {
+  if (NATIVE) {
+    try { return !!NATIVE.installAppUpdate(); }
+    catch (e) { console.log("installAppUpdate failed: " + e); }
+    return false;
+  }
+  return true;
+}
+// Shared install-click flow: the restart note goes up first (the app closes
+// moments later); the stub keeps an inline preview note instead of restarting.
+function runInstall(setNote) {
+  if (!NATIVE) {
+    setNote("Updating - AMU will restart... (preview: updater not launched)", "var(--accent)");
+    return;
+  }
+  setNote("Updating - AMU will restart...", "var(--accent)");
+  if (!launchInstall()) setNote("Could not start the updater - see logs.", "var(--danger)");
+}
+
+// Dedicated 1s poll behind the About row; alive only while a check is in flight.
+let aupdTimer = null;
+function stopAupdPolling() { if (aupdTimer) { clearInterval(aupdTimer); aupdTimer = null; } }
+function startAupdPolling() {
+  if (aupdTimer) return;  // never stack intervals
+  aupdTimer = setInterval(paintAppUpdate, 1000);
+}
+// Repaint the About update row in place; stops its own poll on a terminal state
+// (and when the settings screen is gone - defensive, like paintUpdate).
+function paintAppUpdate() {
+  const line = $(".updline");
+  if (!line) { stopAupdPolling(); return null; }
+  const st = loadUpdateCheck();
+  const status = $(".upd-status", line);
+  let text = "", color = "var(--muted)", install = false;
+  if (st.state === "checking") text = "Checking...";
+  else if (st.state === "uptodate") text = "You are up to date.";
+  else if (st.state === "available") {
+    text = "Version " + st.latest + " available";
+    color = "var(--accent)";
+    install = true;
+  } else if (st.state === "error") {
+    text = "Update check failed" + (st.error ? ": " + st.error : "");
+    color = "var(--danger)";
+  }
+  status.textContent = text;
+  status.style.color = color;
+  $(".upd-install", line).style.display = install ? "inline-block" : "none";
+  if (st.state !== "checking") stopAupdPolling();  // terminal (or idle): poll ends
+  return st;
+}
+
+// Startup notice: render() prepends the banner while updBannerLatest is set and
+// it was not dismissed. Dismiss is remembered for the session only (a JS flag).
+let updBannerLatest = "";
+let updBannerDismissed = false;
+function buildUpdBanner() {
+  const b = el(`<div id="updbanner">
+      <div class="btxt">Update <b class="bver"></b> available</div>
+      <div class="grow"></div>
+      <button class="primary b-install">Install</button>
+      <div class="bx">x</div></div>`);
+  $(".bver", b).textContent = updBannerLatest;  // textContent: no HTML from version.txt
+  $(".b-install", b).addEventListener("click", () => {
+    const txt = $(".btxt", b);
+    runInstall((t, c) => { txt.textContent = t; txt.style.color = c; });
+  });
+  $(".bx", b).addEventListener("click", () => {
+    updBannerDismissed = true;
+    if (b.parentNode) b.parentNode.removeChild(b);
+  });
+  return b;
+}
+// One lightweight look ~3s after load (the native check starts at app launch);
+// retries every 2s only while the check is still running, then stops for good.
+function startupUpdatePoll(triesLeft) {
+  const st = loadUpdateCheck();
+  if (st.state === "available") {
+    updBannerLatest = st.latest || "";
+    if (updBannerLatest && !updBannerDismissed) render();
+    return;
+  }
+  if ((st.state === "checking" || st.state === "idle") && triesLeft > 0)
+    setTimeout(() => startupUpdatePoll(triesLeft - 1), 2000);
+}
+
+let settingsNote = "";  // transient "Saved" note, shown once by the next renderSettings
+
+function renderSettings(host) {
+  const gs = loadGlobalSettings();
+  const info = loadAppInfo();
+  host.appendChild(el(`<div class="crumb">Settings</div>`));
+
+  const blk = el(`<div class="block">
+    <div class="blabel">STEAMCMD LOGIN</div>
+    <div class="toggles">
+      <div class="toggle t-anon ${gs.anonymous ? "on" : ""}"><div class="box"></div><span>Anonymous login</span></div>
+    </div>
+    <div class="credfields" style="display:${gs.anonymous ? "none" : "block"};margin-top:12px">
+      <div class="fieldrow">
+        <div class="field half"><label>Username</label><input|text class="g-user" value="${escAttr(gs.user)}"></div>
+        <div class="field half"><label>Password</label><input|password class="g-pass" value="" placeholder="${gs.passSet ? "(saved)" : ""}"></div>
+        <div class="field half"><label>Steam Guard code</label><input|text class="g-guard" value="" placeholder="${gs.guardSet ? "(saved)" : ""}"></div>
+      </div>
+    </div>
+    <div class="muted-note">Stored DPAPI-encrypted for the current Windows user - never in plain text.
+        Leave Password / Steam Guard empty to keep the stored values.</div>
+    <div class="actions">
+      <button class="primary g-save">Save Settings</button>
+      <span class="g-note" style="display:none"></span></div>
+  </div>`);
+
+  const anon = $(".t-anon", blk);
+  const cred = $(".credfields", blk);
+  anon.addEventListener("click", () => {
+    anon.classList.toggle("on");
+    cred.style.display = anon.classList.contains("on") ? "none" : "block";
+  });
+
+  const sn = $(".g-note", blk);
+  const showSN = (txt, color) => { sn.textContent = txt; sn.style.color = color; sn.style.display = "inline-block"; };
+  if (settingsNote) { showSN(settingsNote, "var(--accent)"); settingsNote = ""; }
+
+  $(".g-save", blk).addEventListener("click", () => {
+    const obj = {
+      anonymous: anon.classList.contains("on"),
+      user: inpVal($(".g-user", blk)).trim(),
+      pass: inpVal($(".g-pass", blk)),      // empty = keep the stored value
+      guard: inpVal($(".g-guard", blk)),    // empty = keep the stored value
+    };
+    let ok = false;
+    if (NATIVE) {
+      try { ok = !!NATIVE.saveGlobalSettings(obj); }
+      catch (e) { console.log("saveGlobalSettings failed: " + e); }
+    } else {
+      STUB_GSET.anonymous = obj.anonymous;
+      STUB_GSET.user = obj.user;
+      if (obj.pass !== "") STUB_GSET.passSet = true;
+      if (obj.guard !== "") STUB_GSET.guardSet = true;
+      ok = true;
+    }
+    if (ok) { settingsNote = "Saved"; render(); }  // full reload: placeholders reflect the new state
+    else showSN("Save failed - see logs.", "var(--danger)");
+  });
+  host.appendChild(blk);
+
+  const about = el(`<div class="block">
+    <div class="blabel">ABOUT</div>
+    <div class="aboutline"><b>ARK Mod Updater</b>${info.version ? " " + escAttr(info.version) : ""}</div>
+    <div class="aboutline updline">
+      <span class="upd-cur"></span>
+      <span class="upd-status"></span>
+      <button class="upd-check">Check for updates</button>
+      <button class="primary upd-install" style="display:none">Install update</button>
+    </div>
+    <div class="aboutline">Powered by <a class="l-sciter">Sciter.JS</a>${info.sciter ? " - engine " + escAttr(info.sciter) : ""}</div>
+    <div class="aboutline"><a class="l-site">ondsen.ch</a></div>
+    <div class="aboutline"><a class="l-paypal">Donate a beer (PayPal)</a></div>
+    <div class="aboutline"><a class="l-gh">github.com/oNdsen/Ark-Mod-Updater</a></div>
+  </div>`);
+  $(".l-sciter", about).addEventListener("click", () => openExternal("https://sciter.com"));
+  $(".l-site", about).addEventListener("click", () => openExternal(URL_SITE));
+  $(".l-paypal", about).addEventListener("click", () => openExternal(URL_PAYPAL));
+  $(".l-gh", about).addEventListener("click", () => openExternal("https://github.com/oNdsen/Ark-Mod-Updater"));
+
+  // Update row: seed from the (launch-time) snapshot; Check kicks a re-check and
+  // starts the 1s poll, which ends itself on uptodate / available / error.
+  const uc = loadUpdateCheck();
+  $(".upd-cur", about).textContent = "Current version: " + (uc.current || info.version || "unknown");
+  $(".upd-check", about).addEventListener("click", () => {
+    const status = $(".upd-status", about);
+    if (kickUpdateCheck()) {
+      status.textContent = "Checking...";   // optimistic; the poll takes over
+      status.style.color = "var(--muted)";
+      $(".upd-install", about).style.display = "none";
+      startAupdPolling();
+    } else {
+      status.textContent = "Could not start the update check.";
+      status.style.color = "var(--danger)";
+    }
+  });
+  $(".upd-install", about).addEventListener("click", () => {
+    stopAupdPolling();  // keep the restart note; nothing repaints over it
+    const status = $(".upd-status", about);
+    runInstall((t, c) => { status.textContent = t; status.style.color = c; });
+  });
+  host.appendChild(about);
+  const ust = paintAppUpdate();
+  if (ust && ust.state === "checking") startAupdPolling();  // launch check still running
+}
+
+/* ---------- server configurator ---------- */
+
+// Schema guard: config_schema.js is a plain <script>, so the global exists by the
+// time this module runs; the fallback keeps the rest of the UI alive if it is missing.
+const SCHEMA = (typeof CONFIG_SCHEMA !== "undefined") ? CONFIG_SCHEMA : { settings: [] };
+
+// Per-server view state. Dumps reload when the server changes; the search +
+// category filters intentionally survive across servers. Pending (staged)
+// changes live in cfgPendingAll, keyed by server id, so they survive
+// navigating away and back - each server keeps its own staged set.
+const cfgState = {
+  serverId: null,          // sid() of the server the dumps belong to
+  dumps: null,             // { gus, game } raw ini dumps
+  maps: null,              // { gus, game } "section|key" (lowercased) -> [values...]
+  search: "",
+  cat: "",
+};
+const cfgPendingAll = {};  // serverId -> { edits: {pendKey->{file,section,key,value}},
+                           //               dels:  {pendKey->{file,section,key}},
+                           //               fams:  {pendKey->{file,section,key,lines[]}} }
+function cfgPend() {
+  const id = cfgState.serverId;
+  if (!cfgPendingAll[id]) cfgPendingAll[id] = { edits: {}, dels: {}, fams: {} };
+  return cfgPendingAll[id];
+}
+let cfgRefresh = null;     // rebuilds the settings list; set by renderConfig
+
+const parseBool = v => /^\s*(true|1)\s*$/i.test(String(v));
+const cfgFileTag = st => st.file === "Game" ? "game" : "gus";
+const cfgMapKey = st => st.section.toLowerCase() + "|" + st.key.toLowerCase();
+const pendKey = st => cfgFileTag(st) + "|" + cfgMapKey(st);
+
+function loadIniDump(s, tag) {
+  if (NATIVE && s.id !== undefined && s.id !== null) {
+    try { return JSON.parse(NATIVE.getIniDump(s.id, tag)); }
+    catch (e) { console.log("getIniDump failed: " + e); }
+    return { sections: [] };
+  }
+  // deep copy so staged stub edits only land in STUB_INI_* on Save
+  return JSON.parse(JSON.stringify(tag === "gus" ? STUB_INI_GUS : STUB_INI_GAME));
+}
+function buildIniMap(dump) {
+  const m = {};
+  for (const sec of (dump.sections || [])) {
+    const sname = String(sec.name || "").toLowerCase();
+    for (const e of (sec.entries || [])) {
+      const k = sname + "|" + String(e[0]).toLowerCase();
+      if (!m[k]) m[k] = [];
+      m[k].push(String(e[1]));
+    }
+  }
+  return m;
+}
+function ensureCfgDumps(s) {
+  const id = sid(s, cur);
+  if (cfgState.serverId === id && cfgState.dumps) return;
+  cfgState.serverId = id;
+  // NOTE: pending state is NOT reset here - it lives per-server in cfgPendingAll.
+  cfgState.dumps = { gus: loadIniDump(s, "gus"), game: loadIniDump(s, "game") };
+  cfgState.maps = { gus: buildIniMap(cfgState.dumps.gus), game: buildIniMap(cfgState.dumps.game) };
+}
+
+// Values of this setting in its ini file (array: ARK repeats keys), or null.
+function dumpValues(st) {
+  const v = cfgState.maps[cfgFileTag(st)][cfgMapKey(st)];
+  return (v && v.length) ? v : null;
+}
+// What the editor should show: staged edit > staged delete (= not set) > ini > not set.
+function cfgDisplay(st) {
+  const pk = pendKey(st), p = cfgPend();
+  if (p.edits[pk]) return { val: p.edits[pk].value, set: true };
+  if (p.dels[pk]) return { val: null, set: false };
+  const v = dumpValues(st);
+  return v ? { val: v[0], set: true } : { val: null, set: false };
+}
+// Family match: a line belongs to the setting when its key equals the setting
+// key OR starts with it followed by "[" (indexed families like Key[0], Key[1]).
+function isFamilyKey(k, key) {
+  const s = String(k).toLowerCase(), w = key.toLowerCase();
+  return s === w || s.indexOf(w + "[") === 0;
+}
+// Raw "Key=Value" lines of a setting's family in its ini file.
+function cfgFamilyLines(st) {
+  const out = [];
+  const secWanted = st.section.toLowerCase();
+  for (const sec of (cfgState.dumps[cfgFileTag(st)].sections || [])) {
+    if (String(sec.name || "").toLowerCase() !== secWanted) continue;
+    for (const e of sec.entries)
+      if (isFamilyKey(e[0], st.key)) out.push(e[0] + "=" + e[1]);
+  }
+  return out;
+}
+// Raw lines for the complex/array display: the family; if nothing matches and
+// the key equals the section name (e.g. ScalabilityGroups), the whole section.
+function cfgRawLines(st) {
+  const out = cfgFamilyLines(st);
+  if (out.length) return out;
+  const secWanted = st.section.toLowerCase();
+  if (secWanted === st.key.toLowerCase())
+    for (const sec of (cfgState.dumps[cfgFileTag(st)].sections || []))
+      if (String(sec.name || "").toLowerCase() === secWanted)
+        for (const e of sec.entries) out.push(e[0] + "=" + e[1]);
+  return out;
+}
+
+// Are two values the same setting-wise? Bools compare parsed ("1" == "True"),
+// everything else as trimmed strings.
+function cfgValuesEqual(st, a, b) {
+  if (st.type === "bool") return parseBool(a) === parseBool(b);
+  return String(a).trim() === String(b).trim();
+}
+function stageEdit(st, value) {
+  const pk = pendKey(st), p = cfgPend();
+  delete p.dels[pk];   // editing a value cancels a staged delete
+  // Reverting to the original state removes the pending change instead of
+  // staging a no-op: back to the ini value (when set), or - for a not-set
+  // bool - back to the schema default the toggle started on.
+  const orig = dumpValues(st);
+  const backToOrig = orig
+    ? cfgValuesEqual(st, value, orig[0])
+    : (st.type === "bool" && cfgValuesEqual(st, value, String(st.default || "")));
+  if (backToOrig) {
+    delete p.edits[pk];
+  } else {
+    p.edits[pk] = { file: cfgFileTag(st), section: st.section, key: st.key,
+                    value: String(value) };
+  }
+  paintCfgFooter();
+}
+function unstageEdit(st) {
+  delete cfgPend().edits[pendKey(st)];
+  paintCfgFooter();
+}
+function stageDelete(st) {
+  const pk = pendKey(st), p = cfgPend();
+  delete p.edits[pk];
+  p.dels[pk] = { file: cfgFileTag(st), section: st.section, key: st.key };
+  paintCfgFooter();
+}
+// Stage a whole-family rewrite (complex/array settings); empty lines = removal.
+// Re-applying exactly the original family lines un-stages the pending change.
+function stageFamily(st, lines) {
+  const pk = pendKey(st), p = cfgPend();
+  if (lines.join("\n") === cfgFamilyLines(st).join("\n")) {
+    delete p.fams[pk];
+  } else {
+    p.fams[pk] = { file: cfgFileTag(st), section: st.section, key: st.key, lines };
+  }
+  paintCfgFooter();
+}
+
+// Repaint one row's set-indicator in place (no list rebuild -> the input keeps focus).
+function updCfgRow(elem, st) {
+  const row = elem.closest(".cfgrow");
+  if (!row) return;
+  const pk = pendKey(st), p = cfgPend();
+  let set;
+  if (st.type === "array" || st.complex) {
+    const fam = p.fams[pk];
+    set = fam ? fam.lines.length > 0 : cfgFamilyLines(st).length > 0;
+  } else {
+    set = !!(p.edits[pk] || (dumpValues(st) && !p.dels[pk]));
+  }
+  row.classList.toggle("isset", set);
+}
+
+// Keep only digits (int) / digits + one dot (float), with an optional leading minus.
+function sanNum(v, isFloat) {
+  let out = "", dot = false;
+  for (let i = 0; i < v.length; i++) {
+    const c = v[i];
+    if (c === "-" && out === "") out += c;
+    else if (c >= "0" && c <= "9") out += c;
+    else if (isFloat && c === "." && !dot) { out += c; dot = true; }
+  }
+  return out;
+}
+function onCfgNumInput(inp, st, isFloat) {
+  let v = String(inp.value !== undefined && inp.value !== null ? inp.value : "");
+  const sv = sanNum(v, isFloat);
+  if (sv !== v) { inp.value = sv; v = sv; }
+  const valid = isFloat ? /^-?(\d+(\.\d*)?|\.\d+)$/.test(v) : /^-?\d+$/.test(v);
+  if (v === "") { unstageEdit(st); inp.classList.remove("invalid"); }
+  else if (valid) { stageEdit(st, v); inp.classList.remove("invalid"); }
+  else { unstageEdit(st); inp.classList.add("invalid"); }  // invalid: excluded from Save
+  updCfgRow(inp, st);
+}
+
+function buildCfgRow(st) {
+  const pk = pendKey(st);
+  const p = cfgPend();
+  const disp = cfgDisplay(st);
+  const inDump = !!dumpValues(st);
+  const complex = st.type === "array" || st.complex;
+  const isset = complex
+    ? (p.fams[pk] ? p.fams[pk].lines.length > 0 : cfgFamilyLines(st).length > 0)
+    : !!(p.edits[pk] || (inDump && !p.dels[pk]));
+  const defStr = (st.default === undefined || st.default === null) ? "" : String(st.default);
+
+  const row = el(`<div class="cfgrow ${isset ? "isset" : ""}">
+      <div class="cleft">
+        <div class="cname">${st.key} <span class="qmark">(?)</span></div>
+        <div class="chint">${st.file} [${st.section}]</div>
+      </div>
+      <div class="cval"></div></div>`);
+  let tip = st.description + "\nDefault: " + (defStr !== "" ? defStr : "(empty)");
+  if (st.example) tip += "\nExample: " + st.example;
+  attachTip($(".qmark", row), tip);
+
+  const val = $(".cval", row);
+  if (complex) {
+    // Family editor: raw display + [Edit] link; editing swaps in a textarea with
+    // one full ini line per row. Apply stages the whole family (empty = removal).
+    const box = el(`<div>
+        <div class="cfgraw"></div>
+        <div class="cfgedit" style="display:none">
+          <textarea class="cfgta"></textarea>
+          <div class="cfgtabtns">
+            <button class="primary ta-apply">Apply</button>
+            <button class="ta-cancel">Cancel</button></div>
+        </div>
+        <a class="cfgeditlink">Edit</a></div>`);
+    const raw = $(".cfgraw", box), edit = $(".cfgedit", box),
+          link = $(".cfgeditlink", box), ta = $(".cfgta", box);
+    if (st.example) ta.setAttribute("placeholder", st.example);
+    // Staged family lines win over the ini dump, both here and in the prefill.
+    const stagedFam = () => cfgPend().fams[pendKey(st)];
+    const paintRaw = () => {
+      const fam = stagedFam();
+      const lines = fam ? fam.lines : cfgRawLines(st);
+      raw.textContent = lines.length ? lines.join("\n") : "not set";
+    };
+    paintRaw();
+    const taVal = () => String(ta.value !== undefined && ta.value !== null ? ta.value : "");
+    // Hint-only validation: a non-empty line without '=' marks the textarea, but
+    // Apply is never blocked (ARK accepts odd lines; do not over-validate).
+    const validate = () => {
+      const bad = taVal().split("\n").some(l => l.trim() !== "" && l.indexOf("=") < 0);
+      ta.classList.toggle("invalid", bad);
+    };
+    ta.addEventListener("input", validate);
+    const showEdit = (on) => {
+      edit.style.display = on ? "block" : "none";
+      raw.style.display = on ? "none" : "block";
+      link.style.display = on ? "none" : "block";
+    };
+    link.addEventListener("click", () => {
+      const fam = stagedFam();
+      ta.value = (fam ? fam.lines : cfgFamilyLines(st)).join("\n");
+      validate();
+      showEdit(true);
+    });
+    $(".ta-cancel", box).addEventListener("click", () => showEdit(false));
+    $(".ta-apply", box).addEventListener("click", () => {
+      const lines = taVal().split("\n").map(l => l.trim()).filter(l => l !== "");
+      stageFamily(st, lines);   // empty array = stage family removal
+      showEdit(false);
+      paintRaw();
+      updCfgRow(raw, st);
+    });
+    val.appendChild(box);
+  } else if (st.type === "bool") {
+    const on = disp.set ? parseBool(disp.val) : parseBool(defStr);
+    const t = el(`<div class="toggle ${on ? "on" : ""} ${disp.set ? "" : "dim"}">
+        <div class="box"></div><span>${on ? "On" : "Off"}</span></div>`);
+    t.addEventListener("click", () => {
+      const d = cfgDisplay(st);
+      const nv = !(d.set ? parseBool(d.val) : parseBool(defStr));
+      stageEdit(st, nv ? "True" : "False");
+      t.classList.toggle("on", nv);
+      t.classList.remove("dim");
+      $("span", t).textContent = nv ? "On" : "Off";
+      updCfgRow(t, st);
+    });
+    val.appendChild(t);
+  } else if (st.type === "enum") {
+    let opts = `<option value="">(default)</option>`;
+    for (const ev of (st.enumValues || []))
+      opts += `<option value="${escAttr(ev)}" ${disp.set && disp.val === ev ? "selected" : ""}>${ev}</option>`;
+    const sel = el(`<select class="cfgsel">${opts}</select>`);
+    sel.addEventListener("change", () => {
+      const v = String(sel.value || "");
+      if (v === "") unstageEdit(st); else stageEdit(st, v);
+      updCfgRow(sel, st);
+    });
+    val.appendChild(sel);
+  } else if (st.type === "int" || st.type === "float") {
+    const inp = el(`<input|text class="cfgnum" value="${disp.set ? escAttr(disp.val) : ""}"
+        placeholder="${escAttr(defStr)}">`);
+    inp.addEventListener("input", () => onCfgNumInput(inp, st, st.type === "float"));
+    val.appendChild(inp);
+  } else {  // string
+    const inp = el(`<input|text class="cfgstr" value="${disp.set ? escAttr(disp.val) : ""}"
+        placeholder="${escAttr(defStr)}">`);
+    inp.addEventListener("input", () => {
+      const v = String(inp.value !== undefined && inp.value !== null ? inp.value : "");
+      if (v === "") unstageEdit(st); else stageEdit(st, v);
+      inp.classList.remove("invalid");
+      updCfgRow(inp, st);
+    });
+    val.appendChild(inp);
+  }
+
+  // Reset "x": only for keys that exist in the ini and aren't already staged for delete.
+  if (inDump && !p.dels[pk] && !complex) {
+    const rx = el(`<div class="cfgreset">x</div>`);
+    attachTip(rx, "Remove from ini - ARK will use the default");
+    rx.addEventListener("click", () => { stageDelete(st); if (cfgRefresh) cfgRefresh(); });
+    val.appendChild(rx);
+  }
+  return row;
+}
+
+// CommandLine settings live in the launch section, not here; the rest is filtered
+// by the server's game, the search text (key or description) and the category.
+function cfgFiltered(game) {
+  const q = cfgState.search.toLowerCase();
+  return SCHEMA.settings.filter(st =>
+    st.file !== "CommandLine" &&
+    st.games.indexOf(game) >= 0 &&
+    (!cfgState.cat || st.category === cfgState.cat) &&
+    (!q || st.key.toLowerCase().indexOf(q) >= 0 ||
+      String(st.description || "").toLowerCase().indexOf(q) >= 0));
+}
+
+function renderCfgList(listHost, countEl, game) {
+  const items = cfgFiltered(game);
+  countEl.textContent = items.length + " setting" + (items.length === 1 ? "" : "s");
+  listHost.innerHTML = "";
+  // bucket by category, first-appearance order (schema interleaves categories)
+  const order = [], buckets = {};
+  for (const st of items) {
+    if (!buckets[st.category]) { buckets[st.category] = []; order.push(st.category); }
+    buckets[st.category].push(st);
+  }
+  for (const cat of order) {
+    listHost.appendChild(el(`<div class="cfgcat">${cat.toUpperCase()}</div>`));
+    const group = el(`<div class="cfggroup"></div>`);
+    for (const st of buckets[cat]) group.appendChild(buildCfgRow(st));
+    listHost.appendChild(group);
+  }
+  if (!items.length)
+    listHost.appendChild(el(`<div class="crumb" style="color:#93A0AE">No settings match the filter.</div>`));
+}
+
+function paintCfgFooter() {
+  const f = $("#cfgfooter");
+  if (!f) return;
+  const p = cfgPend();
+  const n = Object.keys(p.edits).length + Object.keys(p.dels).length + Object.keys(p.fams).length;
+  // The floating footer covers the last rows - give the list room to scroll past it.
+  const lh = $("#cfglist");
+  if (lh) lh.style.paddingBottom = n ? "72px" : "0";
+  if (!n) { f.style.display = "none"; return; }
+  $(".cfgn", f).textContent = n + " pending change" + (n === 1 ? "" : "s");
+  f.style.display = "flex";
+}
+
+// Browser-preview Save target: apply staged changes to the STUB_INI_* objects.
+function stubApplyIni(dump, edits, dels) {
+  const findSec = name => dump.sections.find(x => x.name.toLowerCase() === name.toLowerCase());
+  for (const e of edits) {
+    let sec = findSec(e.section);
+    if (!sec) { sec = { name: e.section, entries: [] }; dump.sections.push(sec); }
+    const ent = sec.entries.find(x => x[0].toLowerCase() === e.key.toLowerCase());
+    if (ent) ent[1] = e.value; else sec.entries.push([e.key, e.value]);
+  }
+  for (const d of dels) {
+    const sec = findSec(d.section);
+    if (sec) sec.entries = sec.entries.filter(x => x[0].toLowerCase() !== d.key.toLowerCase());
+  }
+}
+// Stub twin of NATIVE.setIniKeyLines: replace a family's lines in a STUB dump
+// (remove all family lines, insert the new ones at the first removed position).
+function stubApplyFamily(dump, f) {
+  let sec = dump.sections.find(x => x.name.toLowerCase() === f.section.toLowerCase());
+  const parsed = f.lines.map(ln => {
+    const i = ln.indexOf("=");
+    return i >= 0 ? [ln.slice(0, i), ln.slice(i + 1)] : [ln, ""];
+  });
+  if (!sec) {
+    if (!parsed.length) return;  // removing from a missing section: nothing to do
+    sec = { name: f.section, entries: [] };
+    dump.sections.push(sec);
+  }
+  let at = -1;
+  const kept = [];
+  sec.entries.forEach((e, i) => {
+    if (isFamilyKey(e[0], f.key)) { if (at < 0) at = kept.length; }
+    else kept.push(e);
+  });
+  if (at < 0) at = kept.length;  // no old lines: append at the section end
+  kept.splice(at, 0, ...parsed);
+  sec.entries = kept;
+}
+
+function cfgSave() {
+  const s = servers[cur];
+  const p = cfgPend();
+  const edits = { gus: [], game: [] }, dels = { gus: [], game: [] };
+  const fams = [];
+  for (const k in p.edits) {
+    const e = p.edits[k];
+    edits[e.file].push({ section: e.section, key: e.key, value: e.value });
+  }
+  for (const k in p.dels) {
+    const d = p.dels[k];
+    dels[d.file].push({ section: d.section, key: d.key });
+  }
+  for (const k in p.fams) fams.push(p.fams[k]);
+  if (NATIVE) {
+    // Native side takes plain JS arrays of objects, NOT JSON strings.
+    try {
+      if (edits.gus.length) NATIVE.saveIniValues(s.id, "gus", edits.gus);
+      if (edits.game.length) NATIVE.saveIniValues(s.id, "game", edits.game);
+      if (dels.gus.length) NATIVE.deleteIniKeys(s.id, "gus", dels.gus);
+      if (dels.game.length) NATIVE.deleteIniKeys(s.id, "game", dels.game);
+      // Family rewrites AFTER the profile-API calls (raw section rewrite wins).
+      for (const f of fams)
+        NATIVE.setIniKeyLines(s.id, f.file, f.section, f.key, f.lines);
+    } catch (e) { console.log("ini save failed: " + e); }
+  } else {
+    stubApplyIni(STUB_INI_GUS, edits.gus, dels.gus);
+    stubApplyIni(STUB_INI_GAME, edits.game, dels.game);
+    for (const f of fams)
+      stubApplyFamily(f.file === "gus" ? STUB_INI_GUS : STUB_INI_GAME, f);
+  }
+  delete cfgPendingAll[cfgState.serverId];  // this server's staged set is consumed
+  cfgState.serverId = null;                 // force a dump reload
+  render();
+}
+
+function renderConfig(host) {
+  const s = servers[cur];
+  const game = ensureLaunch(s).game || "ASE";
+  ensureCfgDumps(s);
+
+  host.appendChild(el(`<div class="crumb">Config: <b>${s.name}</b>
+      <span style="color:#9AA6B4">- Aenderungen werden beim naechsten Serverstart wirksam.</span></div>`));
+
+  const cats = [];
+  for (const st of SCHEMA.settings)
+    if (st.file !== "CommandLine" && cats.indexOf(st.category) < 0) cats.push(st.category);
+  let copts = `<option value="" ${cfgState.cat === "" ? "selected" : ""}>All categories</option>`;
+  for (const c of cats)
+    copts += `<option value="${escAttr(c)}" ${cfgState.cat === c ? "selected" : ""}>${c}</option>`;
+
+  const bar = el(`<div class="cfgbar">
+      <input|text class="cfg-search" value="${escAttr(cfgState.search)}" placeholder="Search settings...">
+      <select class="cfgsel cfg-cat">${copts}</select>
+      <div class="grow"></div>
+      <div class="cfgcount"></div></div>`);
+  host.appendChild(bar);
+  const list = el(`<div id="cfglist"></div>`);
+  host.appendChild(list);
+
+  // floating footer lives inside #content so render()'s innerHTML="" cleans it up
+  const foot = el(`<div id="cfgfooter"><div class="cfgn"></div>
+      <button class="primary cfg-save">Save</button><button class="cfg-discard">Discard</button></div>`);
+  $(".cfg-save", foot).addEventListener("click", cfgSave);
+  $(".cfg-discard", foot).addEventListener("click", () => {
+    delete cfgPendingAll[cfgState.serverId];  // only the CURRENT server's staged set
+    render();
+  });
+  host.appendChild(foot);
+
+  cfgRefresh = () => renderCfgList(list, $(".cfgcount", bar), game);
+  const si = $(".cfg-search", bar);
+  let deb = null;
+  si.addEventListener("input", () => {
+    if (deb) clearTimeout(deb);
+    deb = setTimeout(() => {
+      cfgState.search = String(si.value !== undefined && si.value !== null ? si.value : "");
+      cfgRefresh();
+    }, 150);
+  });
+  const cs = $(".cfg-cat", bar);
+  cs.addEventListener("change", () => { cfgState.cat = String(cs.value || ""); cfgRefresh(); });
+
+  cfgRefresh();
+  paintCfgFooter();
+}
+
+function renderLogs(host) {
+  const top = el(`<div class="logtop">
+      <button class="dbg">${showDebug ? "Debug: on" : "Debug: off"}</button>
+      <div class="grow"></div><button class="clr">Clear Log</button></div>`);
+  $(".dbg", top).addEventListener("click", () => { showDebug = !showDebug; render(); });
+  $(".clr", top).addEventListener("click", () => {
+    if (NATIVE) {
+      try { NATIVE.clearLogs(); } catch (e) { console.log("clearLogs failed: " + e); }
+    } else {
+      STUB_LOGS.length = 0;
+    }
+    logs = loadLogs();
+    render();
+  });
+  host.appendChild(top);
+  const box = el(`<div id="logbox"></div>`);
+  logs.filter(l => showDebug || !l.dbg).forEach(l => {
+    // Two fixed-width tags: [INFO] (blue) for normal entries, [DEBG] (violet)
+    // for the verbose tier (debug AND steamcmd types share the DEBG tag).
+    const lvl = l.dbg ? "DEBG" : "INFO";
+    const lvlColor = l.dbg ? "#A78BFA" : "#7FB0E8";
+    // Native entries have no stub color - derive it from the entry type.
+    const color = l.c || (l.dbg ? "#9AA6B4" : "#ECF0F5");
+    // Normalize \r\n and lone \r (steamcmd progress rewrites) to real line
+    // breaks and collapse excessive blank runs; pre-wrap renders them.
+    const msg = String(l.m)
+      .replace(/\r\n/g, "\n").replace(/\r/g, "\n")
+      .replace(/\n{3,}/g, "\n\n").trim();
+    const row = el(`<div class="logrow"><div class="t">${l.t}</div><div class="lvl" style="color:${lvlColor}">[${lvl}]</div><div class="m" style="color:${color}"></div></div>`);
+    row.querySelector(".m").textContent = msg;  // textContent: no HTML injection from log text
+    box.appendChild(row);
+  });
+  host.appendChild(box);
+}
+
+function render() {
+  renderSidebar();
+  if (screen !== "update") stopUpdPolling();  // leaving the update screen kills its 1s poll
+  if (screen !== "settings") stopAupdPolling();  // same for the About update-check poll
+  const host = $("#content");
+  host.innerHTML = "";
+  // Startup notice: the banner tops every screen until installed or dismissed.
+  if (updBannerLatest && !updBannerDismissed) host.appendChild(buildUpdBanner());
+  // Only server/mods/config carry the pills; logs, update, add-server and
+  // settings are full-width screens (the latter three also need no servers).
+  const tabbed = (screen === "server" || screen === "mods" || screen === "config");
+  if (tabbed && !servers.length) {
+    host.appendChild(el(`<div class="crumb" style="color:#93A0AE">No servers configured. Use "+ Add Server".</div>`));
+    return;
+  }
+  if (tabbed && cur >= servers.length) cur = 0;
+  if (tabbed) {
+    const pills = el(`<div class="pills">
+        <span class="${screen === "server" ? "active" : ""}">Server</span>
+        <span class="${screen === "mods" ? "active" : ""}">Mods</span>
+        <span class="${screen === "config" ? "active" : ""}">Config</span></div>`);
+    pills.children[0].addEventListener("click", () => { screen = "server"; render(); });
+    pills.children[1].addEventListener("click", () => { screen = "mods"; render(); });
+    pills.children[2].addEventListener("click", () => { screen = "config"; render(); });
+    host.appendChild(pills);
+  }
+  if (screen === "mods") renderMods(host);
+  else if (screen === "server") renderServer(host);
+  else if (screen === "config") renderConfig(host);
+  else if (screen === "update") renderUpdate(host);
+  else if (screen === "addserver") renderAddServer(host);
+  else if (screen === "settings") renderSettings(host);
+  else renderLogs(host);
+}
+
+$("#navlogs").addEventListener("click", () => { screen = "logs"; render(); });
+$("#addserver").addEventListener("click", () => { screen = "addserver"; render(); });
+$("#navsettings").addEventListener("click", () => { screen = "settings"; render(); });
+$("#linksite").addEventListener("click", () => openExternal(URL_SITE));
+$("#linkdonate").addEventListener("click", () => openExternal(URL_PAYPAL));
+
+pollStatuses();        // seed lastStatus so the first paint shows real dots
+render();
+startStatusPolling();  // one 2s interval for sidebar dots + the status card
+
+// Startup update notice: the native side auto-checks at app launch (the stub
+// mimics that here); take one look ~3s after load and show the banner if an
+// update is available (startupUpdatePoll retries briefly while still checking).
+if (!NATIVE) stubCheckAppUpdate();
+setTimeout(() => startupUpdatePoll(10), 3000);
+
+// One-time binding sanity check, visible only in the Sciter inspector console.
+if (NATIVE) { try { console.log("amucore: " + NATIVE.ping()); } catch (e) {} }
+</script>
+</body>
+</html>
