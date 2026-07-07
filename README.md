@@ -28,9 +28,8 @@ and edit every last server setting. One small native app.
 ---
 
 > **v2 is a ground-up C++20 rewrite** of the original AutoIt application
-> (2017–2026, now archived at
-> [ark-mod-updater-old](https://github.com/oNdsen/ark-mod-updater-old)):
-> a tiny native binary, a fully testable core, and a hardened self-updater.
+> (2017–2026): a tiny native binary, a fully testable core, and a hardened
+> self-updater.
 
 ## ✨ Features
 
