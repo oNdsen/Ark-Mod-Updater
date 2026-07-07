@@ -1,0 +1,108 @@
+name: Release
+
+# Push a version tag (e.g. v2.0.1) to build, test, package and publish a release.
+# The tag MUST match the version in cpp/amucore/src/version.cpp + cpp/CMakeLists.txt.
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed to create the GitHub Release
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify tag matches the code version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $code = (Select-String -Path cpp/amucore/src/version.cpp -Pattern 'return "([0-9.]+)"').Matches.Groups[1].Value
+          $tag  = "${{ github.ref_name }}".TrimStart('v')
+          if ($code -ne $tag) {
+            throw "Tag '$tag' does not match code version '$code'. Bump cpp/amucore/src/version.cpp and cpp/CMakeLists.txt first."
+          }
+          "Version OK: $code"
+
+      - name: Set up MSVC (x64)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install Ninja
+        run: choco install ninja -y --no-progress
+
+      - name: Configure
+        working-directory: cpp
+        run: cmake --preset default
+
+      - name: Build
+        working-directory: cpp
+        run: cmake --build --preset default
+
+      - name: Test
+        working-directory: cpp
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Fetch SteamCMD (bootstrap asset, not in the manifest)
+        shell: pwsh
+        run: |
+          $zip = "$env:RUNNER_TEMP\steamcmd.zip"
+          Invoke-WebRequest "https://steamcdn-a.akamaihd.net/client/installer/steamcmd.zip" -OutFile $zip
+          Expand-Archive $zip -DestinationPath "cpp/build/amu/lib/steamcmd" -Force
+
+      # ───────────────────────────────────────────────────────────────────────
+      # CODE SIGNING via SignPath  —  activate AFTER SignPath Foundation approval.
+      # Then add these repo secrets (Settings → Secrets and variables → Actions):
+      #   SIGNPATH_API_TOKEN, SIGNPATH_ORGANIZATION_ID,
+      #   SIGNPATH_PROJECT_SLUG, SIGNPATH_POLICY_SLUG
+      # and UNCOMMENT the block below. It signs amu.exe + amu_updater.exe BEFORE
+      # the manifest is generated, so the SHA-256 hashes match the signed files.
+      # Action docs: https://github.com/signpath/github-action-submit-signing-request
+      #
+      # - name: Stage binaries for signing
+      #   shell: pwsh
+      #   run: |
+      #     New-Item -ItemType Directory -Force sign-in | Out-Null
+      #     Copy-Item cpp/build/amu/amu.exe            sign-in/
+      #     Copy-Item cpp/build/amu/lib/amu_updater.exe sign-in/
+      # - uses: actions/upload-artifact@v4
+      #   id: unsigned
+      #   with: { name: unsigned-binaries, path: sign-in }
+      # - name: Submit to SignPath
+      #   uses: signpath/github-action-submit-signing-request@v1
+      #   with:
+      #     api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+      #     organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+      #     project-slug: ${{ secrets.SIGNPATH_PROJECT_SLUG }}
+      #     signing-policy-slug: ${{ secrets.SIGNPATH_POLICY_SLUG }}
+      #     github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+      #     wait-for-completion: true
+      #     output-artifact-directory: sign-out
+      # - name: Put the signed binaries back
+      #   shell: pwsh
+      #   run: |
+      #     Copy-Item sign-out/amu.exe            cpp/build/amu/amu.exe            -Force
+      #     Copy-Item sign-out/amu_updater.exe    cpp/build/amu/lib/amu_updater.exe -Force
+      # ───────────────────────────────────────────────────────────────────────
+
+      - name: Package (manifest + zip)
+        shell: pwsh
+        run: ./publish.ps1
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: AMU ${{ github.ref_name }}
+          fail_on_unmatched_files: true
+          files: |
+            publish/release/amu.exe
+            publish/release/sciter.dll
+            publish/release/lib_amu_updater.exe
+            publish/release/steamcmd.exe
+            publish/release/manifest.txt
+            publish/release/version.txt
+            publish/amu-cpp-*.zip
