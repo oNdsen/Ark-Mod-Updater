@@ -12,6 +12,7 @@
 #include <cstring>
 #include <ctime>
 #include <deque>
+#include <map>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -20,6 +21,7 @@
 #include <thread>
 #include <vector>
 
+#include "amucore/backup.h"
 #include "amucore/credstore.h"
 #include "amucore/db.h"
 #include "amucore/orchestrator.h"
@@ -373,7 +375,8 @@ class AmuWindow : public sciter::window {
         // Constructed after db_/supervisor_ (declaration order) - it only stores
         // the references here; its worker thread starts on startUpdate().
         orchestrator_(db_, supervisor_, amucore::OrchestratorConfig{libDirNextToExe()},
-                      makeLogSink()) {
+                      makeLogSink()),
+        backuper_(db_, supervisor_, makeLogSink()) {
     db_.open(dbPathNextToExe());
 
     // Wire the supervisor. The providers read DB + GameUserSettings.ini live at
@@ -410,6 +413,7 @@ class AmuWindow : public sciter::window {
   ~AmuWindow() override {
     schedStop_.store(true);
     if (schedThread_.joinable()) schedThread_.join();  // sleeps in 100ms slices
+    backuper_.shutdown();  // aborts a running archive (its .part is removed)
     supervisor_.shutdown();
   }
 
@@ -1164,6 +1168,11 @@ class AmuWindow : public sciter::window {
       SOM_FUNC(saveWarnPlan),
       SOM_FUNC(getSchedules),
       SOM_FUNC(saveSchedules),
+      SOM_FUNC(getBackupConfig),
+      SOM_FUNC(saveBackupConfig),
+      SOM_FUNC(startBackup),
+      SOM_FUNC(getBackupStatus),
+      SOM_FUNC(skipBackupCountdown),
       SOM_FUNC(clearLogs),
       SOM_FUNC(getUpdateCheck),
       SOM_FUNC(checkAppUpdate),
@@ -1324,6 +1333,100 @@ class AmuWindow : public sciter::window {
     return db_.saveWarnPlan(serverId, amucore::formatWarnPlan(plan));
   }
 
+  // --- map backups (backup.h), per server ------------------------------------
+  // {"before":bool,"intervalH":n,"keep":n,"dir":"","defaultDir":"...",
+  //  "last":"YYYY-MM-DD HH:MM","plan":[{minutes,enabled,text}]}. A plan that
+  // was never stored comes back as the default pair (1 min / now).
+  std::string getBackupConfig(int serverId) {
+    const amucore::Settings st = db_.settings(serverId);
+    amucore::Server srv;
+    for (const amucore::Server& x : db_.servers())
+      if (x.id == serverId) {
+        srv = x;
+        break;
+      }
+    std::vector<amucore::WarnStep> plan = amucore::parseWarnPlan(st.backupplan);
+    if (plan.empty() && st.backupplan.empty()) plan = amucore::defaultBackupPlan();
+    std::string out = "{\"before\":";
+    out += st.backup == 1 ? "true" : "false";
+    out += ",\"intervalH\":" + std::to_string(st.backupIntervalH);
+    out += ",\"keep\":" + std::to_string(st.backupKeep > 0 ? st.backupKeep : 10);
+    out += ",\"dir\":" + jstr(st.backupDir);
+    out += ",\"defaultDir\":" + jstr(amucore::backupFolder(srv, amucore::Settings{}));
+    out += ",\"last\":" + jstr(st.lastBackup);
+    out += ",\"plan\":[";
+    for (size_t i = 0; i < plan.size(); ++i) {
+      if (i) out += ",";
+      out += "{\"minutes\":" + std::to_string(plan[i].minutes);
+      out += ",\"enabled\":" + std::string(plan[i].enabled ? "true" : "false");
+      out += ",\"text\":" + jstr(plan[i].text) + "}";
+    }
+    return out + "]}";
+  }
+
+  // Stores interval (hours, 0 = off), rotation, folder ("" = default), the
+  // message plan (an empty list = silent backup, stored as such) and the
+  // backup-before-every-update flag (the legacy `backup` column).
+  bool saveBackupConfig(int serverId, sciter::value obj) {
+    obj.isolate();
+    int intervalH = itemInt(obj, "intervalH", 0);
+    if (intervalH < 0) intervalH = 0;
+    if (intervalH > 24 * 365) intervalH = 24 * 365;
+    int keep = itemInt(obj, "keep", 10);
+    if (keep < 1) keep = 1;
+    if (keep > 1000) keep = 1000;
+    std::string dir = itemStr(obj, "dir");
+    truncateUtf8(dir, 500);
+    while (!dir.empty() && (dir.back() == ' ' || dir.back() == '\\' || dir.back() == '/')) dir.pop_back();
+    const bool before = itemBool(obj, "before", false);
+    std::vector<amucore::WarnStep> plan;
+    const sciter::value arr = obj.get_item("plan");
+    const int n = arr.is_array() ? arr.length() : 0;
+    for (int i = 0; i < n; ++i) {
+      const sciter::value it = arr.get_item(i);
+      amucore::WarnStep st;
+      st.minutes = itemInt(it, "minutes", 0);
+      st.text = itemStr(it, "text");
+      st.enabled = itemBool(it, "enabled", true);
+      if (st.minutes < 0 || st.minutes > 24 * 60) continue;
+      truncateUtf8(st.text, 300);
+      plan.push_back(std::move(st));
+    }
+    return db_.saveBackupConfig(serverId, intervalH, keep, dir, amucore::formatWarnPlan(plan),
+                                before ? 1 : 0);
+  }
+
+  // "Backup now": the full sequence (messages, saveworld, zip, rotation) with
+  // the SAVED settings. False while an update run or a backup is in progress.
+  bool startBackup(int serverId) {
+    if (orchestrator_.running()) return false;
+    return backuper_.start(serverId, true);
+  }
+
+  // {"running":bool,"phase":"...","countdownSecs":int,"serverId":n,
+  //  "lastFile":"...","lastError":"...","lines":[...]} - lines newest LAST.
+  std::string getBackupStatus() {
+    const amucore::BackupStatus st = backuper_.status();
+    std::string out = "{\"running\":";
+    out += st.running ? "true" : "false";
+    out += ",\"phase\":" + jstr(st.phase.empty() ? "idle" : st.phase);
+    out += ",\"countdownSecs\":" + std::to_string(st.countdownSecs);
+    out += ",\"serverId\":" + std::to_string(st.serverId);
+    out += ",\"lastFile\":" + jstr(st.lastFile);
+    out += ",\"lastError\":" + jstr(st.lastError);
+    out += ",\"lines\":[";
+    for (size_t i = 0; i < st.lines.size(); ++i) {
+      if (i) out += ",";
+      out += jstr(st.lines[i]);
+    }
+    return out + "]}";
+  }
+
+  bool skipBackupCountdown() {
+    backuper_.skipCountdown();
+    return true;
+  }
+
   // --- scheduled update checks (schedule.h), per server ----------------------
   std::string getSchedules(int serverId) {
     std::string out = "[";
@@ -1411,7 +1514,11 @@ class AmuWindow : public sciter::window {
       db_.addLog(s.serverId, "normal",
                  "Schedule " + s.name + " (id " + std::to_string(s.id) + ") is due - update check queued.");
     }
-    if (schedQueue_.empty() || orchestrator_.running()) return;
+    if (orchestrator_.running() || backuper_.running()) return;
+    if (schedQueue_.empty()) {
+      backupTick(stamp);
+      return;
+    }
     const amucore::Schedule s = schedQueue_.front();
     schedQueue_.pop_front();
     const std::string who = "Schedule " + s.name + " (id " + std::to_string(s.id) + ")";
@@ -1424,6 +1531,32 @@ class AmuWindow : public sciter::window {
   std::thread schedThread_;
   std::atomic<bool> schedStop_{false};
   std::deque<amucore::Schedule> schedQueue_;  // touched by the scheduler thread only
+  std::map<int64_t, std::string> backupAttempt_;  // serverId -> stamp of the last automatic attempt
+
+  // Interval map backups (backup.h, schedule.h intervalDue): a server whose
+  // last successful backup is older than its interval gets one - when nothing
+  // else runs, one server per tick. The attempt stamp keeps a FAILING backup
+  // from being retried every 20 s: it waits a full interval like a successful
+  // one. Scheduled update checks always win (they are queued first).
+  void backupTick(const std::string& stamp) {
+    for (const amucore::Server& srv : db_.servers()) {
+      const amucore::Settings cfg = db_.settings(srv.id);
+      if (cfg.backupIntervalH <= 0) continue;
+      if (!amucore::intervalDue(cfg.lastBackup, cfg.backupIntervalH, stamp)) continue;
+      const auto tried = backupAttempt_.find(srv.id);
+      if (tried != backupAttempt_.end() &&
+          !amucore::intervalDue(tried->second, cfg.backupIntervalH, stamp))
+        continue;
+      backupAttempt_[srv.id] = stamp;
+      const std::string id = std::to_string(srv.id);
+      if (backuper_.start(srv.id, true))
+        db_.addLog(srv.id, "normal", "Automatic map backup started for server " + id + " (every " +
+                                         std::to_string(cfg.backupIntervalH) + " h).");
+      else
+        db_.addLog(srv.id, "normal", "Automatic map backup for server " + id + " could not start.");
+      return;
+    }
+  }
 
  public:
 
@@ -1648,6 +1781,7 @@ class AmuWindow : public sciter::window {
   amucore::Db db_;
   amucore::Supervisor supervisor_;
   amucore::Orchestrator orchestrator_;
+  amucore::Backuper backuper_;  // after orchestrator_: destroyed first, joins its worker
   std::shared_ptr<UpdateCheckState> update_ = std::make_shared<UpdateCheckState>();
   std::shared_ptr<ModMetaState> modMeta_ = std::make_shared<ModMetaState>();
 };

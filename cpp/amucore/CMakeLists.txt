@@ -14,6 +14,8 @@ add_library(amucore STATIC
   src/db.cpp
   src/warnplan.cpp
   src/schedule.cpp
+  src/worldbackup.cpp
+  src/backup.cpp
   ${sqlite_SOURCE_DIR}/sqlite3.c
 )
 target_include_directories(amucore PUBLIC include)

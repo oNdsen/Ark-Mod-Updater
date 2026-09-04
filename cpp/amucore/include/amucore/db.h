@@ -48,6 +48,12 @@ struct Settings {
   std::string msg2;
   std::string msg3;
   std::string warnplan;   // AMU 2.2 pre-shutdown warning plan (warnplan.h)
+  // AMU 2.3 map backups (worldbackup.h / backup.h)
+  int backupIntervalH = 0;  // 0 = no automatic backups
+  int backupKeep = 10;      // rotation: newest N archives kept
+  std::string backupDir;    // "" = <install>\ShooterGame\Saved\Backups
+  std::string backupplan;   // warnplan.h format: messages before a backup
+  std::string lastBackup;   // minute stamp of the last successful backup
   int steamcmdAnonymous = 0;
   // The AutoIt stores DPAPI-encrypted STRINGS ("DPAPI:0x...") in these columns
   // (the INTEGER column type is only SQLite type *affinity* - text survives
@@ -156,6 +162,13 @@ class Db {
   // AMU 2.2: per-server pre-shutdown warning plan in the warnplan.h storage
   // format. Writes settings.warnplan; the settings row is created when missing.
   bool saveWarnPlan(int64_t serverId, const std::string& plan);
+
+  // AMU 2.3: map-backup settings (interval, rotation, folder, message plan,
+  // "backup before every update" = the legacy `backup` flag) and the stamp of
+  // the last successful backup.
+  bool saveBackupConfig(int64_t serverId, int intervalHours, int keep, const std::string& dir,
+                        const std::string& plan, int backupBeforeUpdate);
+  bool markBackupRun(int64_t serverId, const std::string& stamp);
 
   // AMU 2.2: scheduled update checks (schedule.h), configured PER SERVER.
   // schedules() returns every row (the watcher walks them all); saveSchedules

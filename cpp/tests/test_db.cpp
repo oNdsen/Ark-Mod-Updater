@@ -714,3 +714,55 @@ TEST_CASE("saveSchedules keeps the stored last_run of an existing id and ignores
   REQUIRE(list.size() == 1);
   CHECK(list[0].serverId == 2);
 }
+
+TEST_CASE("map backup settings: defaults, round-trip, last-backup stamp") {
+  Db db;
+  REQUIRE(db.open(":memory:"));
+  Server sv;
+  sv.name = "Bk";
+  sv.path = "C:/ARK/Bk";
+  sv.map = "TheIsland";
+  const int64_t id = db.upsertServer(sv);
+  REQUIRE(id > 0);
+
+  // fresh row: no interval, keep 10, default folder, no plan, never run
+  Settings st = db.settings(id);
+  REQUIRE(st.present);
+  CHECK(st.backupIntervalH == 0);
+  CHECK(st.backupKeep == 10);
+  CHECK(st.backupDir.empty());
+  CHECK(st.backupplan.empty());
+  CHECK(st.lastBackup.empty());
+  CHECK(st.backup == 1);  // the AutoIt seed: backup before every update
+
+  REQUIRE(db.saveBackupConfig(id, 2, 5, "E:/Backups/Bk", "1\t1\tMap backup in {min} minute\n0\t1\tMap backup now\n", 0));
+  st = db.settings(id);
+  CHECK(st.backupIntervalH == 2);
+  CHECK(st.backupKeep == 5);
+  CHECK(st.backupDir == "E:/Backups/Bk");
+  CHECK(st.backupplan == "1\t1\tMap backup in {min} minute\n0\t1\tMap backup now\n");
+  CHECK(st.backup == 0);
+  CHECK(st.lastBackup.empty());  // config saves never touch the stamp
+
+  REQUIRE(db.markBackupRun(id, "2026-09-04 04:00"));
+  st = db.settings(id);
+  CHECK(st.lastBackup == "2026-09-04 04:00");
+  // and a later config save keeps it
+  REQUIRE(db.saveBackupConfig(id, 0, 10, "", "#none\n", 1));
+  st = db.settings(id);
+  CHECK(st.lastBackup == "2026-09-04 04:00");
+  CHECK(st.backup == 1);
+  CHECK(st.backupIntervalH == 0);
+
+  // a server without a settings row gets one on save
+  Server other;
+  other.name = "Other";
+  other.path = "C:/ARK/Other";
+  const int64_t oid = db.upsertServer(other);
+  REQUIRE(oid > 0);
+  REQUIRE(db.saveBackupConfig(oid, 6, 3, "", "", 1));
+  CHECK(db.settings(oid).backupIntervalH == 6);
+
+  // the global row (-1) is untouched by per-server saves
+  CHECK(db.settings(-1).backupIntervalH == 0);
+}

@@ -211,6 +211,12 @@ bool Db::ensureSchema() {
   addColumnIfMissing("settings", "steamcmd_pass", "INTEGER");
   addColumnIfMissing("settings", "steamcmd_guard", "INTEGER");
   addColumnIfMissing("settings", "warnplan", "TEXT");  // AMU 2.2: pre-shutdown warning plan
+  // AMU 2.3: map backups
+  addColumnIfMissing("settings", "backup_interval_h", "INTEGER");
+  addColumnIfMissing("settings", "backup_keep", "INTEGER");
+  addColumnIfMissing("settings", "backup_dir", "TEXT");
+  addColumnIfMissing("settings", "backupplan", "TEXT");
+  addColumnIfMissing("settings", "last_backup", "TEXT");
   // AMU 2.2: scheduled update checks (schedule.h).
   if (!tableExists("schedules"))
     if (!exec("CREATE TABLE schedules (id INTEGER PRIMARY KEY AUTOINCREMENT, enabled INTEGER, "
@@ -292,7 +298,8 @@ Settings Db::settings(int64_t serverId) {
   sqlite3_stmt* st = nullptr;
   const char* sql =
       "SELECT server_id, debug, backup, force, restarttime, msg1, msg2, msg3, "
-      "steamcmd_anonymous, steamcmd_user, steamcmd_pass, steamcmd_guard, warnplan "
+      "steamcmd_anonymous, steamcmd_user, steamcmd_pass, steamcmd_guard, warnplan, "
+      "backup_interval_h, backup_keep, backup_dir, backupplan, last_backup "
       "FROM settings WHERE server_id = ?;";
   if (sqlite3_prepare_v2(db_, sql, -1, &st, nullptr) != SQLITE_OK) {
     lastError_ = sqlite3_errmsg(db_);
@@ -315,6 +322,11 @@ Settings Db::settings(int64_t serverId) {
     out.steamcmdPass = colText(st, 10);
     out.steamcmdGuard = colText(st, 11);
     out.warnplan = colText(st, 12);
+    out.backupIntervalH = sqlite3_column_int(st, 13);
+    out.backupKeep = sqlite3_column_type(st, 14) == SQLITE_NULL ? 10 : sqlite3_column_int(st, 14);
+    out.backupDir = colText(st, 15);
+    out.backupplan = colText(st, 16);
+    out.lastBackup = colText(st, 17);
   }
   sqlite3_finalize(st);
   return out;
@@ -938,6 +950,54 @@ bool Db::updateModMeta(int64_t modid, const std::string& name, const std::string
   bindText(st, 5, date);    bindText(st, 6, date);
   bindText(st, 7, posted);  bindText(st, 8, posted);
   sqlite3_bind_int64(st, 9, modid);
+  const bool ok = sqlite3_step(st) == SQLITE_DONE;
+  sqlite3_finalize(st);
+  if (!ok) lastError_ = sqlite3_errmsg(db_);
+  return ok;
+}
+
+
+bool Db::saveBackupConfig(int64_t serverId, int intervalHours, int keep, const std::string& dir,
+                          const std::string& plan, int backupBeforeUpdate) {
+  std::lock_guard<std::mutex> lk(mu_);
+  sqlite3_stmt* st = nullptr;
+  if (sqlite3_prepare_v2(db_, "INSERT OR IGNORE INTO settings(server_id) VALUES(?);", -1, &st,
+                         nullptr) != SQLITE_OK) {
+    lastError_ = sqlite3_errmsg(db_);
+    return false;
+  }
+  sqlite3_bind_int64(st, 1, serverId);
+  sqlite3_step(st);
+  sqlite3_finalize(st);
+  const char* sql =
+      "UPDATE settings SET backup_interval_h = ?, backup_keep = ?, backup_dir = ?, "
+      "backupplan = ?, backup = ? WHERE server_id = ?;";
+  if (sqlite3_prepare_v2(db_, sql, -1, &st, nullptr) != SQLITE_OK) {
+    lastError_ = sqlite3_errmsg(db_);
+    return false;
+  }
+  sqlite3_bind_int(st, 1, intervalHours);
+  sqlite3_bind_int(st, 2, keep);
+  bindText(st, 3, dir);
+  bindText(st, 4, plan);
+  sqlite3_bind_int(st, 5, backupBeforeUpdate ? 1 : 0);
+  sqlite3_bind_int64(st, 6, serverId);
+  const bool ok = sqlite3_step(st) == SQLITE_DONE;
+  sqlite3_finalize(st);
+  if (!ok) lastError_ = sqlite3_errmsg(db_);
+  return ok;
+}
+
+bool Db::markBackupRun(int64_t serverId, const std::string& stamp) {
+  std::lock_guard<std::mutex> lk(mu_);
+  sqlite3_stmt* st = nullptr;
+  if (sqlite3_prepare_v2(db_, "UPDATE settings SET last_backup = ? WHERE server_id = ?;", -1, &st,
+                         nullptr) != SQLITE_OK) {
+    lastError_ = sqlite3_errmsg(db_);
+    return false;
+  }
+  bindText(st, 1, stamp);
+  sqlite3_bind_int64(st, 2, serverId);
   const bool ok = sqlite3_step(st) == SQLITE_DONE;
   sqlite3_finalize(st);
   if (!ok) lastError_ = sqlite3_errmsg(db_);

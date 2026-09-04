@@ -810,6 +810,9 @@ select.cfgsel option { background: #161A22; color: var(--text); }
 /* ---------- add-server + settings screens ---------- */
 .fhint { font-size: 11px; color: var(--muted); margin-top: 4px; }
 .formnote { display: none; margin-top: 12px; font-size: 12px; color: var(--danger); }
+.field input.invalid { border-color: var(--danger); }
+.bklines { margin-top: 8px; }
+.bkline { font-size: 12px; color: var(--muted); white-space: pre-wrap; word-break: break-all; }
 .block + .block { margin-top: 16px; }
 .g-note { font-size: 12px; }
 .aboutline { font-size: 12.5px; margin-bottom: 8px; }
@@ -1068,6 +1071,94 @@ function ensureSchedules(s) {
   return s._sc;
 }
 const two = n => (n < 10 ? "0" : "") + n;
+
+// Map backups, PER SERVER (2.3): {before, intervalH, keep, dir, defaultDir,
+// last, plan:[{minutes,text,enabled}]}. Cached like the warn plan and written
+// by "Save automation"; the message rows reuse the warning-row editor.
+const STUB_BACKUP = { before: false, intervalH: 2, keep: 10, dir: "", defaultDir: "D:\\ARK\\srv1\\ShooterGame\\Saved\\Backups", last: "",
+  plan: [{ minutes: 1, text: "Map backup in {min} minute", enabled: true }, { minutes: 0, text: "Map backup now", enabled: true }] };
+function ensureBackupCfg(s) {
+  if (s._bk) return s._bk;
+  if (NATIVE) {  // terminal native branch - see ensureWarnPlan
+    if (s.id === undefined || s.id === null) return null;
+    try { s._bk = JSON.parse(NATIVE.getBackupConfig(s.id)); }
+    catch (e) { console.log("getBackupConfig failed: " + e); return null; }
+    return s._bk;
+  }
+  s._bk = JSON.parse(JSON.stringify(STUB_BACKUP));
+  return s._bk;
+}
+
+// Backup status: polled every second while a backup runs and the Automation
+// tab is open. bkPaint is the open screen's painter (null elsewhere).
+let bkTimer = null, bkPaint = null;
+function stopBkPolling() { if (bkTimer) { clearInterval(bkTimer); bkTimer = null; } }
+function startBkPolling() {
+  if (bkTimer) return;  // never stack intervals
+  bkTimer = setInterval(() => { if (bkPaint) bkPaint(); else stopBkPolling(); }, 1000);
+}
+const bkPhaseNames = { start: "Starting", countdown: "Warning the players", save: "Saving the world",
+                       zip: "Compressing", done: "Done", error: "Error", idle: "Idle" };
+let STUB_BK = null;  // browser preview: { t0, serverId } - a scripted 12 s run
+function stubBackupStatus() {
+  if (!STUB_BK) return { running: false, phase: "idle", countdownSecs: -1, serverId: -1, lastFile: "", lastError: "", lines: [] };
+  const t = (Date.now() - STUB_BK.t0) / 1000;
+  const st = { running: true, phase: "countdown", countdownSecs: -1, serverId: STUB_BK.serverId, lastFile: "", lastError: "",
+               lines: ["Map backup for Demo Server (TheIsland)", "RCON message (1 min): Map backup in 1 minute"] };
+  if (t < 5) { st.countdownSecs = Math.max(0, Math.ceil(5 - t)); }
+  else if (t < 7) { st.phase = "save"; st.lines.push("RCON message (0 min): Map backup now", "Sending saveworld ..."); }
+  else if (t < 10) { st.phase = "zip"; st.lines.push("RCON message (0 min): Map backup now", "Sending saveworld ...", "World saved.", "Compressing D:\\ARK\\srv1\\ShooterGame\\Saved\\SavedArks ..."); }
+  else { st.running = false; st.phase = "done"; st.lastFile = "D:\\ARK\\srv1\\ShooterGame\\Saved\\Backups\\Demo_Server_TheIsland_2026-09-04_12-00-00.zip";
+         st.lines.push("World saved.", "Map backup written: Demo_Server_TheIsland_2026-09-04_12-00-00.zip (3 files, 41.2 MB -> 9.8 MB)"); }
+  return st;
+}
+function loadBackupStatus() {
+  if (NATIVE) {
+    try { return JSON.parse(NATIVE.getBackupStatus()); }
+    catch (e) { console.log("getBackupStatus failed: " + e); }
+    return { running: false, phase: "error", countdownSecs: -1, serverId: -1, lastFile: "", lastError: "status unavailable", lines: [] };
+  }
+  return stubBackupStatus();
+}
+function startBackupRun(serverId) {
+  if (NATIVE) {
+    try { return !!NATIVE.startBackup(serverId); }
+    catch (e) { console.log("startBackup failed: " + e); return false; }
+  }
+  if (STUB_BK && stubBackupStatus().running) return false;
+  STUB_BK = { t0: Date.now(), serverId };
+  return true;
+}
+
+// One editable message list - the shutdown warnings and the backup messages
+// share it. Rows edit `plan` in place. Everything stays visible: no
+// display-toggled children (see buildCfgRow's note).
+function paintPlanRows(hostEl, plan, emptyNote) {
+  hostEl.innerHTML = "";
+  plan.forEach((w, i) => {
+    const r = el(`<div class="warnrow">
+        <div class="toggle w-on ${w.enabled ? "on" : ""}"><div class="box"></div><span>Send</span></div>
+        <input|text class="w-min" value="${escAttr(String(w.minutes))}"><span class="w-unit">min before</span>
+        <input|text class="w-text" value="${escAttr(w.text)}">
+        <button class="icon-btn danger w-del"><img src="trash.png"></button></div>`);
+    attachTip($(".w-del", r), "Remove this message");
+    $(".w-on", r).addEventListener("click", () => {
+      w.enabled = !w.enabled;
+      $(".w-on", r).classList.toggle("on", w.enabled);
+    });
+    $(".w-min", r).addEventListener("input", () => {
+      const n = parseInt(inpVal($(".w-min", r)), 10);
+      w._minInvalid = isNaN(n) || n < 0 || n > 1440;  // a day is the cap the native side enforces too
+      if (!w._minInvalid) w.minutes = n;
+      $(".w-min", r).classList.toggle("invalid", !!w._minInvalid);
+    });
+    $(".w-text", r).addEventListener("input", () => { w.text = inpVal($(".w-text", r)); });
+    $(".w-del", r).addEventListener("click", () => { plan.splice(i, 1); paintPlanRows(hostEl, plan, emptyNote); });
+    hostEl.appendChild(r);
+  });
+  if (!plan.length)
+    hostEl.appendChild(el(`<div class="muted-note" style="margin:0 0 8px 0">${emptyNote}</div>`));
+}
 
 // Load (and cache on the object) a server's launch config. Native: one call per server.
 function ensureLaunch(s) {
@@ -1541,7 +1632,7 @@ function stopUpdPolling() {
 }
 
 const updPhaseNames = { idle: "Idle", collect: "Collecting mods", download: "Downloading",
-                        install: "Installing", countdown: "Restart countdown",
+                        install: "Installing", countdown: "Restart countdown", backup: "Map backup",
                         done: "Done", error: "Error" };
 function fmtMMSS(secs) {
   const m = Math.floor(secs / 60), s = secs % 60;
@@ -1978,13 +2069,13 @@ function wireMapCombo(combo, curGame) {
 // "Browse..." next to a Path field: opens the native folder picker seeded with
 // the current value. Cancelling returns "" and leaves the field untouched. In
 // the plain-browser preview there is no picker, so the button just hints.
-function wireBrowse(btn, input) {
+function wireBrowse(btn, input, title, onPick) {
   if (!btn || !input) return;
   btn.addEventListener("click", () => {
     if (!NATIVE) { btn.textContent = "(desktop only)"; return; }
     try {
-      const p = NATIVE.pickFolder("Select the ARK install root", inpVal(input));
-      if (p) input.value = p;
+      const p = NATIVE.pickFolder(title || "Select the ARK install root", inpVal(input));
+      if (p) { input.value = p; if (onPick) onPick(p); }
     } catch (e) { console.log("pickFolder failed: " + e); }
   });
 }
@@ -2021,7 +2112,8 @@ function renderAutomation(host) {
   // save would write those defaults over the real rows.
   const wp = ensureWarnPlan(s);
   const sc = ensureSchedules(s);
-  if (!wp || !sc) {
+  const bk = ensureBackupCfg(s);
+  if (!wp || !sc || !bk) {
     host.appendChild(el(`<div class="formnote" style="display:block">Could not load this server's automation settings - see the Logs tab. Nothing can be saved from this screen until it loads.</div>`));
     return;
   }
@@ -2034,32 +2126,7 @@ function renderAutomation(host) {
     <div class="warnrows"></div>
     <a class="cfgeditlink w-add">+ Add message</a></div>`);
   const warnHost = $(".warnrows", wblk);
-  const paintWarnRows = () => {
-    warnHost.innerHTML = "";
-    wp.forEach((w, i) => {
-      const r = el(`<div class="warnrow">
-          <div class="toggle w-on ${w.enabled ? "on" : ""}"><div class="box"></div><span>Send</span></div>
-          <input|text class="w-min" value="${escAttr(String(w.minutes))}"><span class="w-unit">min before</span>
-          <input|text class="w-text" value="${escAttr(w.text)}">
-          <button class="icon-btn danger w-del"><img src="trash.png"></button></div>`);
-      attachTip($(".w-del", r), "Remove this message");
-      $(".w-on", r).addEventListener("click", () => {
-        w.enabled = !w.enabled;
-        $(".w-on", r).classList.toggle("on", w.enabled);
-      });
-      $(".w-min", r).addEventListener("input", () => {
-        const n = parseInt(inpVal($(".w-min", r)), 10);
-        w._minInvalid = isNaN(n) || n < 0 || n > 1440;  // a day is the cap the native side enforces too
-        if (!w._minInvalid) w.minutes = n;
-        $(".w-min", r).classList.toggle("invalid", !!w._minInvalid);
-      });
-      $(".w-text", r).addEventListener("input", () => { w.text = inpVal($(".w-text", r)); });
-      $(".w-del", r).addEventListener("click", () => { wp.splice(i, 1); paintWarnRows(); });
-      warnHost.appendChild(r);
-    });
-    if (!wp.length)
-      warnHost.appendChild(el(`<div class="muted-note" style="margin:0 0 8px 0">No warnings - the server is stopped right away.</div>`));
-  };
+  const paintWarnRows = () => paintPlanRows(warnHost, wp, "No warnings - the server is stopped right away.");
   paintWarnRows();
   $(".w-add", wblk).addEventListener("click", () => {
     // next mark below the smallest existing one, so a list grows 20/15/10/5/1-style
@@ -2129,6 +2196,93 @@ function renderAutomation(host) {
   });
   host.appendChild(sblk);
 
+  // --- map backups: zip archive + rotation, interval, messages ----------------
+  // Same cache/save pattern; "Backup now" runs with the SAVED settings.
+  const bblk = el(`<div class="block">
+    <div class="blabel">MAP BACKUPS</div>
+    <div class="muted-note" style="margin:0 0 12px 0">The world file, player profiles and tribes of this server go into one timestamped ZIP archive. Backups run every <i>n</i> hours while AMU is open, before every mod update when enabled, and on <b>Backup now</b>. Only the newest archives are kept; a running server is asked to save the world first.</div>
+    <div class="toggles" style="margin-bottom:12px">
+      <div class="toggle b-before ${bk.before ? "on" : ""}"><div class="box"></div><span>Backup before every mod update</span></div></div>
+    <div class="fieldrow">
+      <div class="field half"><label>Automatic backup every ... hours (0 = off)</label><input|text class="b-int" value="${escAttr(String(bk.intervalH))}"></div>
+      <div class="field half"><label>Archives to keep (rotation)</label><input|text class="b-keep" value="${escAttr(String(bk.keep))}"></div>
+    </div>
+    <div class="field"><label>Backup folder (empty = ${escAttr(bk.defaultDir)})</label>
+      <div class="pathrow"><input|text class="b-dir" value="${escAttr(bk.dir)}"><button class="b-browse">Browse...</button></div></div>
+    <div class="muted-note" style="margin:0 0 10px 0">Messages before a backup, broadcast via RCON while the server is running. <b>{min}</b> = minutes left. Remove every row for a silent backup.</div>
+    <div class="bkrows"></div>
+    <a class="cfgeditlink b-add">+ Add message</a>
+    <div class="actions" style="margin-top:14px"><button class="b-now">Backup now</button><span class="s-note b-state"></span></div>
+    <div class="bklines"></div></div>`);
+  const bkHost = $(".bkrows", bblk);
+  const BK_EMPTY = "No messages - the backup runs silently.";
+  paintPlanRows(bkHost, bk.plan, BK_EMPTY);
+  $(".b-add", bblk).addEventListener("click", () => {
+    let next = 1;
+    if (bk.plan.length) { let mn = bk.plan[0].minutes; for (const x of bk.plan) mn = Math.min(mn, x.minutes); next = Math.max(0, mn - 1); }
+    bk.plan.push({ minutes: next, text: next ? "Map backup in {min} min" : "Map backup now", enabled: true });
+    paintPlanRows(bkHost, bk.plan, BK_EMPTY);
+  });
+  $(".b-before", bblk).addEventListener("click", () => {
+    bk.before = !bk.before;
+    $(".b-before", bblk).classList.toggle("on", bk.before);
+  });
+  attachTip($(".b-before", bblk), "Archives the map right before mods are installed, after the server was stopped for the update.");
+  $(".b-int", bblk).addEventListener("input", () => {
+    const n = parseInt(inpVal($(".b-int", bblk)), 10);
+    bk._intInvalid = isNaN(n) || n < 0 || n > 8760;
+    if (!bk._intInvalid) bk.intervalH = n;
+    $(".b-int", bblk).classList.toggle("invalid", !!bk._intInvalid);
+  });
+  $(".b-keep", bblk).addEventListener("input", () => {
+    const n = parseInt(inpVal($(".b-keep", bblk)), 10);
+    bk._keepInvalid = isNaN(n) || n < 1 || n > 1000;
+    if (!bk._keepInvalid) bk.keep = n;
+    $(".b-keep", bblk).classList.toggle("invalid", !!bk._keepInvalid);
+  });
+  $(".b-dir", bblk).addEventListener("input", () => { bk.dir = inpVal($(".b-dir", bblk)); });
+  wireBrowse($(".b-browse", bblk), $(".b-dir", bblk), "Select the backup folder", () => { bk.dir = inpVal($(".b-dir", bblk)); });
+
+  const bState = $(".b-state", bblk), bLines = $(".bklines", bblk), bNow = $(".b-now", bblk);
+  attachTip(bNow, "Runs a backup now with the saved settings - save first if you changed something here.");
+  const paintBackup = () => {
+    const st = loadBackupStatus();
+    const mine = st.serverId === s.id;
+    let t = "", err = false;
+    if (st.running && mine) {
+      t = (bkPhaseNames[st.phase] || st.phase) + " ...";
+      if (st.countdownSecs >= 0) t += " backup in " + fmtMMSS(st.countdownSecs);
+    } else if (st.running) {
+      t = "A backup of another server is running.";
+    } else if (mine && st.phase === "error") {
+      t = "Last backup failed: " + st.lastError; err = true;
+    } else if (mine && st.phase === "done" && st.lastFile) {
+      t = "Backup written: " + st.lastFile;
+    } else {
+      t = bk.last ? "Last backup: " + bk.last : "No backup yet.";
+    }
+    bState.className = "s-note" + (err ? " err" : "");
+    bState.textContent = t;
+    bLines.innerHTML = "";
+    if (mine && st.lines.length)
+      for (const l of st.lines.slice(-6)) { const d = el(`<div class="bkline"></div>`); d.textContent = l; bLines.appendChild(d); }
+    if (st.running) bNow.setAttribute("disabled", ""); else bNow.removeAttribute("disabled");
+    if (!st.running) stopBkPolling();
+  };
+  bNow.addEventListener("click", () => {
+    if (!startBackupRun(s.id)) {
+      bState.className = "s-note err";
+      bState.textContent = "Cannot start - an update or another backup is running.";
+      return;
+    }
+    startBkPolling();
+    paintBackup();
+  });
+  bkPaint = paintBackup;
+  paintBackup();
+  if (loadBackupStatus().running) startBkPolling();
+  host.appendChild(bblk);
+
   const act = el(`<div class="actions">
       <button class="primary a-save">Save automation</button><span class="s-note"></span></div>`);
   const note = $(".s-note", act);
@@ -2140,14 +2294,19 @@ function renderAutomation(host) {
       if (x._timeInvalid) return fail("Time must be HH:MM (24h) - \"" + x._time + "\" is not.");
       if (!(x.days & 127)) return fail("Every schedule needs at least one weekday.");
     }
+    for (const w of bk.plan)
+      if (w._minInvalid) return fail("Backup message minutes must be a number between 0 and 1440.");
+    if (bk._intInvalid) return fail("The backup interval must be a whole number of hours between 0 and 8760.");
+    if (bk._keepInvalid) return fail("Archives to keep must be a number between 1 and 1000.");
     let ok = true;
     if (NATIVE) {
-      try { ok = !!NATIVE.saveWarnPlan(s.id, wp) && !!NATIVE.saveSchedules(s.id, sc); }
+      try { ok = !!NATIVE.saveWarnPlan(s.id, wp) && !!NATIVE.saveSchedules(s.id, sc) && !!NATIVE.saveBackupConfig(s.id, bk); }
       catch (e) { console.log("save automation failed: " + e); ok = false; }
     }
     if (!ok) return fail("Save failed - see the Logs tab.");
     s._wp = null;  // re-read: ids and last-run stamps come back from the DB
     s._sc = null;
+    s._bk = null;
     automationNote = "Saved";
     render();
   });
@@ -3322,7 +3481,11 @@ function render() {
   if (screen !== "update") stopUpdPolling();  // leaving the update screen kills its 1s poll
   if (screen !== "settings") stopAupdPolling();  // same for the About update-check poll
   if (screen !== "mods") stopModMetaPoll();      // and for the Workshop backfill
-  if (screen !== "automation") for (const sv of servers) { sv._wp = null; sv._sc = null; }  // unsaved automation edits live only there
+  if (screen !== "automation") {  // unsaved automation edits live only there; so does the backup poll
+    for (const sv of servers) { sv._wp = null; sv._sc = null; sv._bk = null; }
+    stopBkPolling();
+    bkPaint = null;
+  }
   const host = $("#content");
   host.innerHTML = "";
   // Startup notice: the banner tops every screen until installed or dismissed.

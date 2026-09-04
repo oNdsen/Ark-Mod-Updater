@@ -30,6 +30,10 @@ std::string formatWarnPlan(const std::vector<WarnStep>& plan);
 // 20 / 15 / 10 / 5 / 1 minutes, "Server shutdown in {min} min for mod updates".
 std::vector<WarnStep> defaultWarnPlan();
 
+// The map-backup messages (AMU 2.3, settings.backupplan): 1 minute
+// "Map backup in {min} minute", then 0 = "Map backup now".
+std::vector<WarnStep> defaultBackupPlan();
+
 // The plan equivalent to the AutoIt columns of an existing installation:
 // msg1 at `restarttime`, msg2 at 1 minute, msg3 at 0 - empty texts skipped.
 // Empty when nothing is set (a fresh AMU 2 database).

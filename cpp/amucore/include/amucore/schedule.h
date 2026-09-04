@@ -47,4 +47,14 @@ bool scheduleDue(const Schedule& s, int mondayWday, int hour, int minute,
 // least one weekday, serverId -1 or > 0).
 bool scheduleValid(const Schedule& s);
 
+// Minute stamp ("YYYY-MM-DD HH:MM", local) -> minutes since a fixed origin,
+// or -1 when malformed. Calendar arithmetic only (no time zone involved), so
+// two stamps compare correctly across DST changes to within the hour.
+int64_t stampToMinutes(const std::string& stamp);
+
+// PURE: is an interval-driven job (the map backup) due? Yes when
+// intervalHours > 0 and `last` is empty/malformed or at least intervalHours
+// old at `now`.
+bool intervalDue(const std::string& last, int intervalHours, const std::string& now);
+
 }  // namespace amucore

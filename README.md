@@ -14,7 +14,7 @@ and edit every last server setting. One small native app.
 [![Platform](https://img.shields.io/badge/platform-Windows%20x64-0078D6?logo=windows&logoColor=white)](#-building)
 [![C++20](https://img.shields.io/badge/C%2B%2B-20-00599C?logo=cplusplus&logoColor=white)](#-architecture)
 [![UI: Sciter.JS](https://img.shields.io/badge/UI-Sciter.JS-8A2BE2)](https://sciter.com)
-[![Tests](https://img.shields.io/badge/tests-166%20passing-3DDC84)](#-tests)
+[![Tests](https://img.shields.io/badge/tests-198%20passing-3DDC84)](#-tests)
 [![Issues](https://img.shields.io/github/issues/oNdsen/ark-mod-updater)](https://github.com/oNdsen/ark-mod-updater/issues)
 
 [Download](https://github.com/oNdsen/ark-mod-updater/releases/latest) •
@@ -30,6 +30,27 @@ and edit every last server setting. One small native app.
 > **v2 is a ground-up C++20 rewrite** of the original AutoIt application
 > (2017–2026): a tiny native binary, a fully testable core, and a hardened
 > self-updater.
+
+## What's new in v2.3
+
+- **Automated map backups.** The world file, player profiles and tribes of a
+  server go into one timestamped ZIP archive
+  (`<server>_<map>_YYYY-MM-DD_HH-MM-SS.zip`, ZIP64 when it gets big) under
+  `ShooterGame\Saved\Backups` or a folder of your choice, with a configurable
+  rotation (default: the newest 10 are kept). Backups run **every *n* hours**
+  (e.g. every 2 h) while AMU is open, **before every mod update** (on by
+  default), and on **Backup now**. A running server is told to `saveworld`
+  first and AMU waits for the fresh save.
+- **Backup messages for your players.** Like the shutdown warnings: any
+  number of RCON broadcasts with their own minute marks (`{min}`). Default:
+  *Map backup in 1 minute*, then *Map backup now*. Remove every row for a
+  silent backup.
+- **Automation tab.** Shutdown warnings, scheduled update checks and map
+  backups are configured per server on their own tab.
+- Review round: two servers scheduled for the same minute both run (queued),
+  a mod's load order can be changed with *Up* / *Down*, rolling backups of
+  `GameUserSettings.ini` / `Game.ini` before every AMU write
+  (`AMU-Backups`, 10 kept), and a dozen smaller fixes.
 
 ## What's new in v2.2
 
@@ -71,8 +92,11 @@ and edit every last server setting. One small native app.
   status in the sidebar.
 - 📡 **Update orchestration** — configurable countdown broadcasts to your
   players (any number of steps, `{min}` templating), scheduled update checks,
-  world-save backup, all-or-nothing mod swap, and the server only restarts if
-  it was running before.
+  a map backup before the install, all-or-nothing mod swap, and the server
+  only restarts if it was running before.
+- 🗜️ **Map backups** — timestamped ZIP archives of the world, profiles and
+  tribes: every *n* hours, before every update and on demand, with rotation
+  and RCON messages for your players.
 - ⚙️ **Full server configurator** — ~370 settings for **ASE and ASA** from
   the community wiki, searchable, categorized and collapsible, with an
   *Only set* filter, typed editors, tooltips, click-to-edit defaults, and raw
@@ -116,7 +140,9 @@ Two layers, cleanly separated so the entire core is testable without a GUI:
 | `supervisor` | Process lifecycle: start, graceful RCON stop, crash auto-restart |
 | `orchestrator` | The mod-update pipeline (SteamCMD → unpack → install → restart) |
 | `warnplan` | Pre-shutdown warning plan: storage format, defaults, countdown steps |
-| `schedule` | Scheduled update checks: due-time logic |
+| `schedule` | Scheduled update checks and backup intervals: due-time logic |
+| `worldbackup` | Map backups: archive naming, include rules, rotation, the ZIP writer (zlib, ZIP64) |
+| `backup` | The backup runner: player messages, `saveworld`, archive, rotation |
 | `steamcmd_parser` | SteamCMD stdout → typed progress events |
 | `zunpack` | ARK/Valve `.z` decompressor |
 | `mod_writer` | `.mod` descriptor generator |

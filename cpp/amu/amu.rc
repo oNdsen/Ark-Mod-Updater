@@ -16,12 +16,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName",      "oNdsen"
             VALUE "FileDescription",  "ARK Mod Updater"
-            VALUE "FileVersion",      "2.2.1.0"
+            VALUE "FileVersion",      "2.3.0.0"
             VALUE "InternalName",     "amu"
             VALUE "LegalCopyright",   "Copyright (c) 2026 oNdsen"
             VALUE "OriginalFilename", "amu.exe"
             VALUE "ProductName",      "ARK Mod Updater"
-            VALUE "ProductVersion",   "2.2.1.0"
+            VALUE "ProductVersion",   "2.3.0.0"
         END
     END
     BLOCK "VarFileInfo"

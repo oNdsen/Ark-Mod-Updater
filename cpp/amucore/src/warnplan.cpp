@@ -116,6 +116,19 @@ std::vector<WarnStep> defaultWarnPlan() {
   return out;
 }
 
+std::vector<WarnStep> defaultBackupPlan() {
+  std::vector<WarnStep> out;
+  WarnStep a;
+  a.minutes = 1;
+  a.text = "Map backup in {min} minute";
+  out.push_back(std::move(a));
+  WarnStep b;
+  b.minutes = 0;
+  b.text = "Map backup now";
+  out.push_back(std::move(b));
+  return out;
+}
+
 std::vector<WarnStep> legacyWarnPlan(int restarttime, const std::string& msg1,
                                      const std::string& msg2, const std::string& msg3) {
   std::vector<WarnStep> out;

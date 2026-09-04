@@ -65,6 +65,26 @@ TEST_CASE("an empty plan is stored as a marker, not as an empty column") {
 // ---------------------------------------------------------------------------
 // defaults and the legacy migration
 
+TEST_CASE("defaultBackupPlan is the 1-minute notice plus the 'now' message") {
+  const auto plan = defaultBackupPlan();
+  REQUIRE(plan.size() == 2);
+  CHECK(plan[0].minutes == 1);
+  CHECK(plan[0].enabled);
+  CHECK(renderWarnText(plan[0].text, plan[0].minutes) == "Map backup in 1 minute");
+  CHECK(plan[1].minutes == 0);
+  CHECK(plan[1].text == "Map backup now");
+  // it runs through the same countdown machinery as the shutdown warnings
+  const auto steps = countdownSteps(plan);
+  REQUIRE(steps.size() == 2);
+  CHECK(secondsUntilNext(steps, 0) == 60);
+  CHECK(secondsUntilNext(steps, 1) == 0);
+  CHECK(countdownTotalSeconds(steps) == 60);
+  // stored and read back unchanged, and an emptied plan stays empty
+  CHECK(parseWarnPlan(formatWarnPlan(plan)).size() == 2);
+  CHECK(parseWarnPlan(formatWarnPlan({})).empty());
+  CHECK_FALSE(formatWarnPlan({}).empty());
+}
+
 TEST_CASE("defaultWarnPlan is 20/15/10/5/1 minutes, all enabled, with {min}") {
   const auto plan = defaultWarnPlan();
   REQUIRE(plan.size() == 5);

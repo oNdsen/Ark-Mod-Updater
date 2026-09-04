@@ -15,6 +15,7 @@
 #include <unordered_map>
 #include <utility>
 
+#include "amucore/backup.h"
 #include "amucore/credstore.h"
 #include "amucore/mod_writer.h"
 #include "amucore/rcon.h"
@@ -101,17 +102,6 @@ std::string nowDateString() {
   GetLocalTime(&st);
   char buf[16];
   _snprintf_s(buf, _TRUNCATE, "%04u/%02u/%02u", st.wYear, st.wMonth, st.wDay);
-  return std::string(buf);
-}
-
-// Local "DD.MM.YYYY_HH.MM.SS" for the .ark backup name (mirrors the AutoIt
-// _DateTimeFormat(...,2) + (...,5) with / and : replaced by dots).
-std::string backupStamp() {
-  SYSTEMTIME st;
-  GetLocalTime(&st);
-  char buf[32];
-  _snprintf_s(buf, _TRUNCATE, "%02u.%02u.%04u_%02u.%02u.%02u", st.wDay, st.wMonth, st.wYear,
-              st.wHour, st.wMinute, st.wSecond);
   return std::string(buf);
 }
 
@@ -1125,20 +1115,15 @@ bool Orchestrator::updateServer(const Server& srv,
           }
         }
 
-        // .ark backup (runs whether or not the server was running - AutoIt 2149).
+        // Map backup before the install (runs whether or not the server was
+        // running - AutoIt 2149). AMU 2.3: the same zip archive + rotation the
+        // Automation tab's backups produce, in place of the raw .ark copy.
         if (srv.backup == 1) {
-          const std::string savedArks = srv.path + "\\ShooterGame\\Saved\\SavedArks\\";
-          const fs::path arkFile = widePath(savedArks + srv.map + ".ark");
-          if (fs::exists(arkFile, ec)) {
-            const std::string bakName = srv.map + "_ModBak_" + backupStamp() + ".ark";
-            fs::copy_file(arkFile, widePath(savedArks + bakName),
-                          fs::copy_options::overwrite_existing, ec);
-            line("Map Backup Successfull: " + bakName);
-            log("debug", "Map Backup Successfull: " + bakName);
-          } else {
-            line("Error: Could not backup the Map. It seems that " + srv.map + " doesnt exists!");
-            log("normal", "Error: Could not backup the Map. It seems that " + srv.map + " doesnt exists!");
-          }
+          setPhase("backup");
+          const BackupOutcome b = runBackup(db_, srv, db_.settings(srv.id),
+                                            [this](const std::string& t) { line(t); }, logSink_);
+          if (!b.ok) line("Continuing with the update without a map backup.");
+          setPhase("install");
         }
         shutdownDone = true;
       }
