@@ -1,11 +1,20 @@
 cmake_minimum_required(VERSION 3.21)
-project(amu VERSION 2.2.0 LANGUAGES C CXX RC)
+project(amu VERSION 2.2.1 LANGUAGES C CXX RC)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 if(MSVC)
-  add_compile_options(/utf-8)
+  # /guard:cf + /GUARD:CF: Control-Flow Guard for every target built here,
+  # including the FetchContent'd SQLite/zlib (add_compile_options applies to
+  # the subdirectories added below). DYNAMICBASE/HIGHENTROPYVA/NXCOMPAT are the
+  # x64 defaults, spelled out so a toolchain change cannot silently drop them.
+  # Deliberately NOT /CETCOMPAT: sciter.dll runs in-process and is not ours; a
+  # shadow-stack violation inside it would kill the app on CET-capable CPUs.
+  # Besides the hardening itself this trims the "unsigned + no mitigations"
+  # signals that ML scanners score (see the SignPath/VirusTotal notes).
+  add_compile_options(/utf-8 /guard:cf)
+  add_link_options(/GUARD:CF /DYNAMICBASE /HIGHENTROPYVA /NXCOMPAT)
   add_compile_definitions(UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()
 
