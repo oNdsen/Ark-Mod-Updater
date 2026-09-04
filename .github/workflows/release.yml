@@ -20,12 +20,19 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         shell: pwsh
         run: |
+          # The version lives in TWO places and BOTH must match the tag:
+          #   version.cpp    -> what the running app reports (the update check
+          #                     compares this against the published version.txt)
+          #   CMakeLists.txt -> what publish.ps1 writes INTO version.txt
+          # Checking only one lets a release publish a stale version.txt, and
+          # every installed client would then silently never see the update.
           $code = (Select-String -Path cpp/amucore/src/version.cpp -Pattern 'return "([0-9.]+)"').Matches.Groups[1].Value
+          $cmake = (Select-String -Path cpp/CMakeLists.txt -Pattern 'project\(\s*amu\s+VERSION\s+([0-9.]+)').Matches.Groups[1].Value
           $tag  = "${{ github.ref_name }}".TrimStart('v')
-          if ($code -ne $tag) {
-            throw "Tag '$tag' does not match code version '$code'. Bump cpp/amucore/src/version.cpp and cpp/CMakeLists.txt first."
+          if ($code -ne $tag -or $cmake -ne $tag) {
+            throw "Version mismatch - tag '$tag', version.cpp '$code', CMakeLists.txt '$cmake'. All three must agree."
           }
-          "Version OK: $code"
+          "Version OK: $tag (version.cpp + CMakeLists.txt agree)"
 
       - name: Set up MSVC (x64)
         uses: ilammy/msvc-dev-cmd@v1
@@ -93,10 +100,20 @@ jobs:
         shell: pwsh
         run: ./publish.ps1
 
-      - name: Create GitHub Release
+      # Tag pushes publish; a manual workflow_dispatch run stops after the build
+      # and tests (it has no tag, so a release could not be created anyway).
+      # DRAFT on purpose: the update channel is "releases/latest", so publishing
+      # immediately would hand every installed client an unverified build the
+      # second the workflow turns green - and assets upload AFTER the release is
+      # created, so "latest" would briefly serve a version.txt with no manifest.
+      # Check the draft, then hit Publish.
+      - name: Create GitHub Release (draft)
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           name: AMU ${{ github.ref_name }}
+          draft: true
+          generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
             publish/release/amu.exe

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(amu VERSION 2.0.0 LANGUAGES C CXX)
+project(amu VERSION 2.1.0 LANGUAGES C CXX RC)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -51,12 +51,35 @@ set(DOCTEST_WITH_TESTS OFF CACHE BOOL "" FORCE)
 set(DOCTEST_WITH_MAIN_IN_STATIC_LIB OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(doctest)
 
-# Sciter.JS SDK: headers + prebuilt sciter.dll (the GUI engine; HTML/CSS UI,
-# native DirectWrite text). Fetched as a source archive - no CMakeLists inside,
-# so MakeAvailable just populates the tree.
+# Sciter.JS SDK: the GUI engine (HTML/CSS UI with native DirectWrite text).
+# We use exactly three things from it: the headers, sciter.dll (x64) and
+# packfolder.exe. The full archive also ships ~50 demo binaries for three
+# architectures, and antivirus ML heuristics flag some of them (Sophos
+# quarantines bin/windows/x86/window-mixin.exe) - a quarantined file makes
+# CMake's extract step fail the whole configure with "Access is denied".
+# So: download without extracting, then unpack only the subset we need. This
+# also keeps the build tree small and the configure step fast.
 FetchContent_Declare(sciterjs
-  URL https://gitlab.com/sciter-engine/sciter-js-sdk/-/archive/main/sciter-js-sdk-main.zip)
+  URL https://gitlab.com/sciter-engine/sciter-js-sdk/-/archive/main/sciter-js-sdk-main.zip
+  DOWNLOAD_NO_EXTRACT TRUE)
 FetchContent_MakeAvailable(sciterjs)
+
+set(SCITER_SDK_DIR ${sciterjs_SOURCE_DIR}/sdk)
+if(NOT EXISTS ${SCITER_SDK_DIR}/include/sciter-x.h)
+  file(GLOB SCITER_SDK_ZIP ${sciterjs_SOURCE_DIR}/*.zip)
+  if(NOT SCITER_SDK_ZIP)
+    message(FATAL_ERROR "Sciter SDK archive not found in ${sciterjs_SOURCE_DIR}")
+  endif()
+  message(STATUS "Unpacking the Sciter SDK subset (headers, sciter.dll, packfolder.exe)")
+  file(ARCHIVE_EXTRACT
+       INPUT ${SCITER_SDK_ZIP}
+       DESTINATION ${sciterjs_SOURCE_DIR}/unpack
+       PATTERNS "sciter-js-sdk-main/include/*"
+                "sciter-js-sdk-main/bin/windows/x64/sciter.dll"
+                "sciter-js-sdk-main/bin/windows/packfolder.exe")
+  file(RENAME ${sciterjs_SOURCE_DIR}/unpack/sciter-js-sdk-main ${SCITER_SDK_DIR})
+  file(REMOVE_RECURSE ${sciterjs_SOURCE_DIR}/unpack)
+endif()
 
 # zlib (static) for the ARK .z decompressor, linked into amucore.
 set(ZLIB_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)

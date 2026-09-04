@@ -9,7 +9,7 @@
 set(AMU_UI_RES ${CMAKE_CURRENT_BINARY_DIR}/ui_resources.cpp)
 file(GLOB_RECURSE AMU_UI_FILES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/ui/*)
 add_custom_command(OUTPUT ${AMU_UI_RES}
-  COMMAND ${sciterjs_SOURCE_DIR}/bin/windows/packfolder.exe
+  COMMAND ${SCITER_SDK_DIR}/bin/windows/packfolder.exe
           ${CMAKE_CURRENT_SOURCE_DIR}/ui ${AMU_UI_RES} -v resources
   DEPENDS ${AMU_UI_FILES}
   COMMENT "Packing ui/ into amu.exe (Sciter resources)"
@@ -17,13 +17,15 @@ add_custom_command(OUTPUT ${AMU_UI_RES}
 
 add_executable(amu WIN32
   main_sciter.cpp
-  ${sciterjs_SOURCE_DIR}/include/sciter-main.cpp
+  amu.rc
+  ${SCITER_SDK_DIR}/include/sciter-main.cpp
 )
 # The generated array is #included by main_sciter.cpp (not compiled standalone).
 set_source_files_properties(main_sciter.cpp PROPERTIES OBJECT_DEPENDS ${AMU_UI_RES})
-target_include_directories(amu PRIVATE ${sciterjs_SOURCE_DIR}/include ${CMAKE_CURRENT_BINARY_DIR})
+target_include_directories(amu PRIVATE ${SCITER_SDK_DIR}/include ${CMAKE_CURRENT_BINARY_DIR})
 target_compile_definitions(amu PRIVATE SKIP_MAIN)
-target_link_libraries(amu PRIVATE amucore shell32)
+# ole32: IFileOpenDialog (the native folder picker for the server Path field).
+target_link_libraries(amu PRIVATE amucore shell32 ole32)
 target_compile_features(amu PRIVATE cxx_std_20)
 if(MSVC)
   # Sciter SDK headers are not /W4-clean; keep our own warnings via /W3 here.
@@ -33,7 +35,7 @@ endif()
 # Ship sciter.dll and the HTML/CSS UI next to amu.exe.
 add_custom_command(TARGET amu POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
-          "${sciterjs_SOURCE_DIR}/bin/windows/x64/sciter.dll"
+          "${SCITER_SDK_DIR}/bin/windows/x64/sciter.dll"
           "$<TARGET_FILE_DIR:amu>/sciter.dll"
   COMMAND ${CMAKE_COMMAND} -E copy_directory
           "${CMAKE_CURRENT_SOURCE_DIR}/ui" "$<TARGET_FILE_DIR:amu>/ui"

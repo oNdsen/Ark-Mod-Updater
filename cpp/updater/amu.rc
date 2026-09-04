@@ -1,0 +1,30 @@
+#include <windows.h>
+
+// Same app icon for the standalone updater window/exe.
+1 ICON "amu.ico"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION 2,1,0,0
+ PRODUCTVERSION 2,1,0,0
+ FILEOS VOS__WINDOWS32
+ FILETYPE VFT_APP
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName",      "oNdsen"
+            VALUE "FileDescription",  "AMU Updater"
+            VALUE "FileVersion",      "2.1.0.0"
+            VALUE "InternalName",     "amu_updater"
+            VALUE "LegalCopyright",   "Copyright (c) 2026 oNdsen"
+            VALUE "OriginalFilename", "amu_updater.exe"
+            VALUE "ProductName",      "ARK Mod Updater - Updater"
+            VALUE "ProductVersion",   "2.1.0.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

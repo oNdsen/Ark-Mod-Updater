@@ -77,12 +77,59 @@ std::string lastEnlargedPreview(const std::string& s) {
   return last;
 }
 
+// Trim spaces and tabs from both ends (.acf indents its blocks with tabs).
+std::string trimWs(const std::string& s) {
+  size_t b = 0;
+  size_t e = s.size();
+  while (b < e && (s[b] == ' ' || s[b] == '\t')) ++b;
+  while (e > b && (s[e - 1] == ' ' || s[e - 1] == '\t')) --e;
+  return s.substr(b, e - b);
+}
+
 // content="<url>" of the <meta property="og:image" ...> tag, if present.
 std::string ogImage(const std::string& s) {
   const size_t tag = s.find("og:image");
   if (tag == kNpos) return {};
   size_t end = 0;
   return between(s, "content=\"", "\"", tag, &end);
+}
+
+// Every `open`...`close` text block, in file order.
+std::vector<std::string> allBetween(const std::string& s, const char* open, const char* close) {
+  std::vector<std::string> out;
+  size_t from = 0;
+  for (;;) {
+    const size_t o = s.find(open, from);
+    if (o == kNpos) break;
+    const size_t start = o + std::char_traits<char>::length(open);
+    const size_t c = s.find(close, start);
+    if (c == kNpos) break;
+    out.push_back(s.substr(start, c - start));
+    from = c;
+  }
+  return out;
+}
+
+// Steam lays the stats block out as TWO COLUMNS: all detailsStatLeft labels
+// (File Size / Posted / Updated) in one container, all detailsStatRight values
+// in the next. A label therefore pairs with the value at the same INDEX - not
+// with the next value in the file, which is always File Size's (the first
+// version of this helper did exactly that and the fixture test caught it).
+// "" when the label is absent or has no counterpart.
+std::string statByLabel(const std::string& s, const char* label) {
+  const std::vector<std::string> labels = allBetween(s, "class=\"detailsStatLeft\">", "</div>");
+  const std::vector<std::string> values = allBetween(s, "class=\"detailsStatRight\">", "</div>");
+  // The LIVE page renders the labels with a trailing space ("Posted </div>");
+  // the 2018 fixture does not - so compare trimmed, and trim the value too.
+  auto trimmed = [](const std::string& t) {
+    size_t b = 0, e = t.size();
+    while (b < e && (t[b] == ' ' || t[b] == '\t' || t[b] == '\r' || t[b] == '\n')) ++b;
+    while (e > b && (t[e - 1] == ' ' || t[e - 1] == '\t' || t[e - 1] == '\r' || t[e - 1] == '\n')) --e;
+    return t.substr(b, e - b);
+  };
+  for (size_t i = 0; i < labels.size() && i < values.size(); ++i)
+    if (trimmed(labels[i]) == label) return trimmed(values[i]);
+  return {};
 }
 
 }  // namespace
@@ -107,6 +154,8 @@ WorkshopModInfo parseWorkshopHtml(const std::string& html) {
   if (info.previewUrl.empty()) info.previewUrl = ogImage(html);
 
   info.date = lastBetween(html, "class=\"detailsStatRight\">", "</div>");
+  info.posted = statByLabel(html, "Posted");
+
   return info;
 }
 
@@ -129,16 +178,23 @@ AcfModInfo parseAcfForMod(const std::string& acfText, const std::string& modId) 
     }
   }
 
-  // Find the first line containing the mod id (StringInStr), then read the three
-  // following value lines positionally: line+2, line+3, line+4. The .acf block is
+  // Find the block HEADER line - the one whose whole content is the quoted mod id -
+  // then read the three following value lines positionally: line+2, line+3, line+4.
+  // The .acf block is
   //   "<modid>" / { / "size" "..." / "timeupdated" "..." / "manifest" "..." / }
-  int line = -1;
+  // A bare substring search (the AutoIt StringInStr) also matches another mod's
+  // 19-digit "manifest" or 10-digit "timeupdated" value, and the three values would
+  // then be read from the wrong block - which makes the updater believe a mod is up
+  // to date (or reinstall it) forever.
+  const std::string header = "\"" + modId + "\"";
+  size_t line = 0;
+  bool found = false;
   for (size_t i = 0; i < lines.size(); ++i) {
-    if (lines[i].find(modId) != std::string::npos) { line = static_cast<int>(i); break; }
+    if (trimWs(lines[i]) == header) { line = i; found = true; break; }
   }
-  if (line < 0) return out;
+  if (!found) return out;
   const size_t last = lines.size();  // one past valid index
-  if (static_cast<size_t>(line) + 4 >= last) return out;
+  if (line + 4 >= last) return out;
 
   // AutoIt StringSplit(line, '"') element [4] is the value between the 2nd pair of
   // quotes, i.e. the 4th quoted token counting from 1: "key" <ws> "value" -> [4]=value.

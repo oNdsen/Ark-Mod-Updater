@@ -1,6 +1,11 @@
 #include <doctest/doctest.h>
 
+#include <atomic>
+#include <set>
+#include <string>
+#include <thread>
 #include <type_traits>
+#include <vector>
 
 #include "amucore/db.h"
 
@@ -97,6 +102,7 @@ TEST_CASE("mods round-trip: upsertMod then read back via mods()") {
   a.date = "2026/07/03 10:00:00";
   a.manifest = 999;
   a.timeupdated = 1720000000;
+  a.posted = "4 Nov, 2018 @ 9:00am";
   REQUIRE(db.upsertMod(a));
 
   Mod b;
@@ -115,6 +121,8 @@ TEST_CASE("mods round-trip: upsertMod then read back via mods()") {
   CHECK(rows[0].preview == "http://img/preview.jpg");
   CHECK(rows[0].manifest == 999);
   CHECK(rows[0].timeupdated == 1720000000);
+  CHECK(rows[0].posted == "4 Nov, 2018 @ 9:00am");
+  CHECK(rows[1].posted.empty());  // column arrives via addColumnIfMissing -> NULL -> ""
   CHECK(rows[1].modid == 3000000000);
 
   // modid is UNIQUE - a second upsert replaces the row, not duplicates it.
@@ -479,4 +487,154 @@ TEST_CASE("stripQuotedRuns matches the AutoIt regex behavior") {
   CHECK(stripQuotedRuns("unterminated ' quote") == "unterminated ' quote");
   // Mixed: the first ' opens, next ' closes; the " inside is swallowed.
   CHECK(stripQuotedRuns("a 'has \" inside' b") == "a  b");
+}
+
+// --- thread safety ---------------------------------------------------------
+// ONE Db is shared by the Sciter UI thread, the supervisor's watcher + worker
+// threads and the orchestrator's worker (main_sciter.cpp), so every public
+// method has to be atomic on its own. The cases below drive one Db from several
+// threads at once. :memory: is per-connection, which is exactly the point here:
+// all threads go through the same Db object, hence the same connection.
+//
+// No doctest assert runs inside a spawned thread (REQUIRE throws, which would
+// abort the process instead of failing the test): the workers only collect
+// values, and the main thread checks them after the join. Every loop is bounded,
+// so a scheduling hiccup can never hang the suite.
+
+TEST_CASE("upsertServer keeps its own id while another thread writes logs") {
+  Db db;
+  REQUIRE(db.open(":memory:"));
+
+  constexpr int kServers = 40;
+  constexpr int kMaxLogs = 20000;  // safety cap; `stop` normally ends the loop
+
+  std::atomic<bool> stop{false};
+  std::atomic<int> written{0};
+  std::vector<int64_t> logIds;
+  logIds.reserve(kMaxLogs);
+  std::thread logger([&] {
+    // The background log sink: a continuous stream of INSERTs into logs on the
+    // SAME connection - which is what used to steal sqlite3_last_insert_rowid
+    // out from under the servers INSERT.
+    for (int i = 0; i < kMaxLogs && !stop.load(std::memory_order_relaxed); ++i) {
+      logIds.push_back(db.addLog(-1, "debug", "background lifecycle line"));
+      written.fetch_add(1, std::memory_order_relaxed);
+      std::this_thread::yield();
+    }
+  });
+  // Make sure the logger is really running before the first server is inserted.
+  while (written.load(std::memory_order_relaxed) < 50) std::this_thread::yield();
+
+  std::vector<int64_t> serverIds;
+  for (int i = 0; i < kServers; ++i) {
+    Server sv;
+    sv.name = "S" + std::to_string(i);
+    sv.path = "C:\\ARK\\S" + std::to_string(i);
+    sv.map = "TheIsland";
+    serverIds.push_back(db.upsertServer(sv));
+  }
+  stop.store(true, std::memory_order_relaxed);
+  logger.join();
+
+  // servers.id is AUTOINCREMENT and nothing else inserts servers, so the ids
+  // must be exactly 1..kServers. A rowid stolen from the logs INSERTs would
+  // show up here as a large, out-of-sequence number.
+  REQUIRE(serverIds.size() == static_cast<size_t>(kServers));
+  for (int i = 0; i < kServers; ++i) CHECK(serverIds[i] == i + 1);
+
+  // ... and every server must still JOIN with the settings row written for it
+  // (a bogus server_id would drop the row from servers() entirely).
+  const auto rows = db.servers();
+  REQUIRE(rows.size() == static_cast<size_t>(kServers));
+  for (int i = 0; i < kServers; ++i) {
+    CHECK(rows[i].id == serverIds[i]);
+    CHECK(rows[i].serverId == serverIds[i]);  // settings.server_id (the JOIN key)
+    CHECK(rows[i].name == "S" + std::to_string(i));
+    CHECK(rows[i].restarttime == 5);  // the seeded settings row really is its own
+  }
+  // The launch row is written after the INSERT too, keyed on the same id.
+  CHECK(db.launch(serverIds[0]).present);
+
+  // Same guarantee the other way round: no addLog may return a servers rowid
+  // handed over by an interleaved upsertServer.
+  const std::set<int64_t> uniqueLogIds(logIds.begin(), logIds.end());
+  CHECK(uniqueLogIds.size() == logIds.size());
+  CHECK(*uniqueLogIds.begin() > 0);
+  CHECK(db.logs(0).size() == logIds.size());
+}
+
+TEST_CASE("many threads writing one Db keep counts, ids and lastError intact") {
+  Db db;
+  REQUIRE(db.open(":memory:"));
+
+  constexpr int kThreads = 4;
+  constexpr int kLogsPerThread = 250;
+  constexpr int kServers = 30;
+
+  // One slot per thread, sized (and reserved) up front: the threads only touch
+  // their own element, and the outer vectors never reallocate.
+  std::vector<std::vector<int64_t>> perThread(kThreads);
+  std::vector<std::string> errors(kThreads);
+  for (auto& v : perThread) v.reserve(kLogsPerThread);
+
+  std::atomic<int> running{0};
+  std::vector<std::thread> workers;
+  for (int t = 0; t < kThreads; ++t) {
+    workers.emplace_back([&, t] {
+      running.fetch_add(1, std::memory_order_relaxed);
+      for (int i = 0; i < kLogsPerThread; ++i) {
+        perThread[t].push_back(db.addLog(t, "debug", "worker line " + std::to_string(i)));
+        // Readers racing the writers: lastError() used to hand out a reference
+        // into a std::string every error path reassigns from any thread.
+        errors[t] = db.lastError();
+        if ((i % 50) == 0) {
+          (void)db.servers();
+          (void)db.logs(10);
+        }
+      }
+    });
+  }
+  while (running.load(std::memory_order_relaxed) < kThreads) std::this_thread::yield();
+
+  std::vector<int64_t> serverIds;
+  for (int i = 0; i < kServers; ++i) {
+    Server sv;
+    sv.name = "T" + std::to_string(i);
+    sv.path = "C:\\ARK\\T" + std::to_string(i);
+    serverIds.push_back(db.upsertServer(sv));
+  }
+  for (auto& w : workers) w.join();
+
+  // Every server id unique, non-zero and inside the AUTOINCREMENT sequence.
+  const std::set<int64_t> uniqueServerIds(serverIds.begin(), serverIds.end());
+  CHECK(uniqueServerIds.size() == serverIds.size());
+  CHECK(*uniqueServerIds.begin() == 1);
+  CHECK(*uniqueServerIds.rbegin() == kServers);
+
+  // Every log id unique and non-zero, and the row counts add up exactly - no
+  // INSERT was lost, duplicated or attributed to the wrong table.
+  std::set<int64_t> uniqueLogIds;
+  for (const auto& v : perThread) uniqueLogIds.insert(v.begin(), v.end());
+  CHECK(uniqueLogIds.size() == static_cast<size_t>(kThreads * kLogsPerThread));
+  CHECK(*uniqueLogIds.begin() > 0);
+  CHECK(db.logs(0).size() == static_cast<size_t>(kThreads * kLogsPerThread));
+
+  // Each server survived with its own settings + launch rows.
+  REQUIRE(db.servers().size() == static_cast<size_t>(kServers));
+  for (const int64_t id : serverIds) {
+    CHECK(db.settings(id).present);
+    CHECK(db.launch(id).present);
+  }
+  // Nothing failed, so every lastError() snapshot is an intact empty string.
+  for (const auto& e : errors) CHECK(e.empty());
+}
+
+TEST_CASE("Db is pinned: neither copyable nor movable") {
+  // Background threads hold a Db& for the object's whole lifetime, and its
+  // std::mutex is not movable - relocating one could never be safe.
+  static_assert(!std::is_copy_constructible_v<Db> && !std::is_copy_assignable_v<Db>,
+                "Db must not be copyable");
+  static_assert(!std::is_move_constructible_v<Db> && !std::is_move_assignable_v<Db>,
+                "Db must stay pinned - threads keep a Db& to it");
+  CHECK(true);  // the assertions above are compile-time
 }

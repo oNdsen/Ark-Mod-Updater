@@ -124,6 +124,79 @@ TEST_CASE("decide: desired Stopped") {
   }
 }
 
+// --- decide: the stop-retry damper ----------------------------------------------
+
+namespace {
+
+// desired Stopped + actual Running, i.e. the "please stop this server" state.
+DecideInput mkStop(bool alive, bool stopRetryElapsed) {
+  DecideInput in;
+  in.desired = Desired::Stopped;
+  in.actual = Actual::Running;
+  in.processAlive = alive;
+  in.stopRetryElapsed = stopRetryElapsed;
+  return in;
+}
+
+}  // namespace
+
+TEST_CASE("decide: stopRetryElapsed defaults to true - a first Stop is immediate") {
+  const RestartPolicy pol;
+  DecideInput in;  // deliberately built WITHOUT touching stopRetryElapsed
+  in.desired = Desired::Stopped;
+  in.actual = Actual::Running;
+  in.processAlive = true;
+  CHECK(in.stopRetryElapsed);
+  CHECK(decide(in, pol) == SupAction::Stop);
+}
+
+TEST_CASE("decide: a stop that failed does not silently self-revert") {
+  const RestartPolicy pol;
+  // AMU unelevated / the ARK server elevated: the stop sequence comes back
+  // NoHandle, so doStop keeps actual == Running (the process IS running) with
+  // desired == Stopped and arms the retry damper. From there:
+  CHECK(decide(mkStop(true, false), pol) == SupAction::None);  // damped, no RCON storm
+  CHECK(decide(mkStop(true, true), pol) == SupAction::Stop);   // one retry per damper
+  // ...and when the process finally goes away the damper must NOT block the
+  // bookkeeping, or the entry would sit in "running" forever.
+  CHECK(decide(mkStop(false, false), pol) == SupAction::MarkStopped);
+  CHECK(decide(mkStop(false, true), pol) == SupAction::MarkStopped);
+  // Crucially: never Start. The old code booked Stopped while the process was
+  // still alive, and the adoption sweep then flipped desired back to Running.
+}
+
+TEST_CASE("decide: the stop damper cannot suppress anything else") {
+  const RestartPolicy pol;
+  // desired Running is unaffected by the stop damper on every actual state.
+  const Actual as[] = {Actual::Stopped,  Actual::Starting, Actual::Running,
+                       Actual::Stopping, Actual::Crashed,  Actual::FailedToStart};
+  for (Actual a : as) {
+    for (bool alive : {false, true}) {
+      DecideInput damped = mk(Desired::Running, a, alive, 0, 0, true);
+      damped.stopRetryElapsed = false;
+      DecideInput fresh = damped;
+      fresh.stopRetryElapsed = true;
+      CHECK(decide(damped, pol) == decide(fresh, pol));
+    }
+  }
+  // And an elapsed damper still loses against an update in progress.
+  DecideInput upd = mkStop(true, true);
+  upd.updating = true;
+  CHECK(decide(upd, pol) == SupAction::None);
+}
+
+// --- stopLeftProcessRunning -------------------------------------------------------
+
+TEST_CASE("stopLeftProcessRunning: only NoHandle means the process survived") {
+  // NoHandle is the "stop did not complete" marker - no rights to terminate,
+  // a kill that did not take, or a supervisor-shutdown abort.
+  CHECK(stopLeftProcessRunning(StopStatus::NoHandle));
+  // Everything else confirms the process is gone.
+  CHECK_FALSE(stopLeftProcessRunning(StopStatus::CleanExit));
+  CHECK_FALSE(stopLeftProcessRunning(StopStatus::TerminatedAfterTimeout));
+  CHECK_FALSE(stopLeftProcessRunning(StopStatus::AlreadyStopped));
+}
+
 // --- backoffMs ----------------------------------------------------------------
 
 TEST_CASE("backoffMs doubles per failure and caps at maxBackoffMs") {

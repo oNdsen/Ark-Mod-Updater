@@ -95,6 +95,58 @@ TEST_CASE("needsReinstall: sizes differ end to end -> reinstall") {
   CHECK(needsReinstall(0, 500, "0", "0", 2000));  // e.g. emptied install dir
 }
 
+TEST_CASE("needsReinstall: a wiped install stamped as up to date is never repaired") {
+  // Why a FAILED install must NOT stamp the mods row: with the fresh usize (0,
+  // read back from the broken folder) and the fresh ACF timestamp in the row,
+  // the cheap first gate says "up to date" and the real source size is never
+  // even consulted - the mod stays broken forever. installModFiles therefore
+  // reports failure and updateServer skips the stamp.
+  CHECK_FALSE(needsReinstall(0, 0, "1700000000", "1700000000", 5000));
+  // With the stale row kept instead, the same folder is correctly reinstalled.
+  CHECK(needsReinstall(0, 4000, "1699000000", "1700000000", 5000));
+}
+
+// --- steamcmdTimedOut (the stdout-pump watchdog) --------------------------------
+
+TEST_CASE("steamcmdTimedOut: fires only once the idle deadline is reached") {
+  CHECK_FALSE(steamcmdTimedOut(1000, 1000, 5000));  // no time passed at all
+  CHECK_FALSE(steamcmdTimedOut(1000, 5999, 5000));  // 4999 ms of silence
+  CHECK(steamcmdTimedOut(1000, 6000, 5000));        // exactly the deadline
+  CHECK(steamcmdTimedOut(1000, 600000, 5000));
+}
+
+TEST_CASE("steamcmdTimedOut: a non-advancing clock never trips it (no underflow)") {
+  // GetTickCount64 is monotonic, but subtracting the wrong way round on unsigned
+  // values wraps to ~1.8e19 ms and would kill a perfectly healthy download.
+  CHECK_FALSE(steamcmdTimedOut(10000, 9999, 5000));
+  CHECK_FALSE(steamcmdTimedOut(10000, 0, 5000));
+}
+
+TEST_CASE("steamcmdTimedOut: the default deadline is generous but finite") {
+  // A big mod downloads in complete silence, so the default must tolerate a long
+  // quiet stretch - and still terminate a wedged child eventually.
+  const uint64_t deadline = kSteamCmdIdleTimeoutMs;
+  CHECK(deadline >= 10ull * 60 * 1000);
+  CHECK_FALSE(steamcmdTimedOut(0, deadline - 1));
+  CHECK(steamcmdTimedOut(0, deadline));
+}
+
+// --- unpackFailureReason --------------------------------------------------------
+
+TEST_CASE("unpackFailureReason: names the unpackZ error code when there was one") {
+  CHECK(unpackFailureReason(2) == "unpack error 2");  // bad signature/version
+  CHECK(unpackFailureReason(5) == "unpack error 5");  // chunk size mismatch
+}
+
+TEST_CASE("unpackFailureReason: zerr 0 means the WRITE failed, not 'error 0'") {
+  // The retry loop only writes when unpackZ succeeded, so a zero code can never
+  // mean a decompression error - the first port reported "error 0" here, which
+  // read like a success code.
+  const std::string r = unpackFailureReason(0);
+  CHECK(r == "could not write the unpacked file");
+  CHECK(r.find('0') == std::string::npos);
+}
+
 // --- zHeaderUnpackedSize --------------------------------------------------------
 
 namespace {

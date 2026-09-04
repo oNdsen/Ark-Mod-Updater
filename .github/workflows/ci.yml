@@ -1,0 +1,33 @@
+name: CI
+
+# Build + test on every push and pull request, so a broken commit surfaces
+# immediately instead of during a release.
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE']
+  pull_request:
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE']
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up MSVC (x64)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Configure
+        working-directory: cpp
+        run: cmake --preset default
+
+      - name: Build
+        working-directory: cpp
+        run: cmake --build --preset default
+
+      - name: Test
+        working-directory: cpp
+        run: ctest --test-dir build --output-on-failure

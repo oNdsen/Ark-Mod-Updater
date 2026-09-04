@@ -1,17 +1,34 @@
-ARK Mod Updater (AMU) — C++ rewrite
+ARK Mod Updater (AMU)
 Copyright (c) 2026 oNdsen. Licensed under the MIT License (see LICENSE).
 
-This product bundles or links the following third-party components:
+This product bundles, links or redistributes the following third-party
+components:
 
-- Dear ImGui — MIT License — https://github.com/ocornut/imgui
-- doctest — MIT License — https://github.com/doctest/doctest
-- Roboto (Roboto-Light.ttf) — Apache License 2.0 — https://fonts.google.com/specimen/Roboto
+REDISTRIBUTED IN A RELEASE
+- Sciter.JS engine (sciter.dll) — Sciter's own license, NOT MIT —
+  https://sciter.com — used under the free tier, which requires attribution;
+  AMU credits Sciter.JS in its About screen and in the README. The DLL ships
+  as a separate file next to amu.exe and is not statically linked.
 
-Planned for later milestones:
+COMPILED / LINKED INTO THE BINARIES
 - SQLite (amalgamation) — Public Domain — https://sqlite.org
 - zlib — zlib License — https://zlib.net
 
-steamcmd.exe is Valve Corporation's software and is NOT part of this project.
-It is distributed under Valve's own terms; verify those terms before
-redistributing it. Prefer downloading it at first run / package time rather
-than committing it to this repository.
+BUILD- AND TEST-TIME ONLY (not shipped)
+- doctest — MIT License — https://github.com/doctest/doctest
+- FreeType — FTL / GPLv2 dual license — https://freetype.org
+  (fetched for the legacy Dear ImGui shell target, which is EXCLUDE_FROM_ALL
+  and never produced by a normal build)
+- Dear ImGui — MIT License — https://github.com/ocornut/imgui
+  (same: the amu_imgui fallback shell is not built or shipped)
+- Roboto (Roboto-Light.ttf) — Apache License 2.0 —
+  https://fonts.google.com/specimen/Roboto (asset of that same legacy shell)
+
+NOT PART OF THIS PROJECT
+steamcmd.exe is Valve Corporation's software. It is distributed under Valve's
+own terms; verify those terms before redistributing it. It is attached to
+releases as a convenience bootstrap asset and is deliberately NOT listed in the
+update manifest, so the updater never replaces it.
+
+ARK server setting documentation used to build the configurator schema comes
+from the ARK Community Wiki (https://ark.wiki.gg), CC BY-NC-SA.

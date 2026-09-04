@@ -2,12 +2,15 @@
 // and exposes amucore to the UI as Window.this.amu.* (SOM passport).
 
 #include <windows.h>
+#include <shobjidl.h>  // IFileOpenDialog (folder picker)
 
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -111,6 +114,25 @@ bool fileExists(const std::string& path) {
   return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
 }
 
+// Last-write time of a file as local "DD.MM.YYYY HH:MM" (the app's date style),
+// "" when it is missing. This is how the mod list learns its LOCAL install /
+// update time: AMU rewrites <id>.mod on every install, so the file's mtime is
+// exactly that moment - no extra DB column, and it survives a lost amu.db.
+std::string fileMtimeLocal(const std::string& path) {
+  WIN32_FILE_ATTRIBUTE_DATA fa{};
+  if (!GetFileAttributesExW(toWide(path).c_str(), GetFileExInfoStandard, &fa)) return {};
+  FILETIME local{};
+  SYSTEMTIME st{};
+  if (!FileTimeToLocalFileTime(&fa.ftLastWriteTime, &local) ||
+      !FileTimeToSystemTime(&local, &st)) {
+    return {};
+  }
+  char buf[32];
+  std::snprintf(buf, sizeof(buf), "%02u.%02u.%04u %02u:%02u", st.wDay, st.wMonth, st.wYear,
+                st.wHour, st.wMinute);
+  return buf;
+}
+
 // bytes -> "245 MB" / "1.3 GB" / "-" for zero, matching the compact UI labels.
 std::string humanSize(int64_t bytes) {
   if (bytes <= 0) return "-";
@@ -141,6 +163,62 @@ std::string libDirNextToExe() {
   size_t slash = dir.find_last_of(L"\\/");
   if (slash != std::wstring::npos) dir.resize(slash);
   return toUtf8(dir + L"\\lib");
+}
+
+// lib\cache\previews next to the exe. Workshop preview images are cached as
+// FILES rather than handed to the UI as https URLs: the mod list then paints
+// instantly and offline, and Steam's CDN is hit once per mod instead of on
+// every repaint. Deleting the folder is a safe way to force a re-fetch.
+std::string previewDirNextToExe() { return libDirNextToExe() + "\\cache\\previews"; }
+
+// The four container formats Sciter decodes, in the order they are probed on
+// disk. Sciter picks its decoder from the file NAME, but Steam preview URLs
+// carry no extension ("/ugc/<id>/<hash>/?imw=268"), so the download sniffs the
+// magic bytes and names the file accordingly.
+const char* const kPreviewExts[] = {"jpg", "png", "gif", "webp"};
+
+// Image type from the first bytes; "" for anything unrecognised (an HTML error
+// page, a 404 body) so it is never cached as if it were a thumbnail.
+const char* imageExtFromMagic(const std::string& head) {
+  auto is = [&](const char* sig, size_t n) {
+    return head.size() >= n && std::memcmp(head.data(), sig, n) == 0;
+  };
+  if (is("\xFF\xD8\xFF", 3)) return "jpg";
+  if (is("\x89PNG\r\n\x1A\n", 8)) return "png";
+  if (is("GIF8", 4)) return "gif";
+  if (head.size() >= 12 && std::memcmp(head.data(), "RIFF", 4) == 0 &&
+      std::memcmp(head.data() + 8, "WEBP", 4) == 0) {
+    return "webp";
+  }
+  return "";
+}
+
+// The cached preview file for a mod id, or "" when nothing is on disk.
+std::string previewFileFor(const std::string& modId) {
+  for (const char* ext : kPreviewExts) {
+    const std::string p = previewDirNextToExe() + "\\" + modId + "." + ext;
+    if (fileExists(p)) return p;
+  }
+  return std::string();
+}
+
+// "C:\a b\c.png" -> "file:///C:/a%20b/c.png". Sciter loads the thumbnail from
+// this URL, so everything outside the unreserved set is percent-encoded (the
+// install dir may well be under "Program Files").
+std::string fileUrl(const std::string& path) {
+  static const char kHex[] = "0123456789ABCDEF";
+  std::string out = "file:///";
+  for (unsigned char c : path) {
+    if (c == '\\' || c == '/') { out += '/'; continue; }
+    const bool safe = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                      (c >= '0' && c <= '9') || c == '-' || c == '_' ||
+                      c == '.' || c == '~' || c == ':';
+    if (safe) { out += static_cast<char>(c); continue; }
+    out += '%';
+    out += kHex[c >> 4];
+    out += kHex[c & 0x0F];
+  }
+  return out;
 }
 
 // The folder containing the running exe (the install dir the updater targets).
@@ -177,6 +255,50 @@ bool isModIdDigits(const std::string& s) {
   for (char c : s)
     if (c < '0' || c > '9') return false;
   return true;
+}
+
+// Download one Workshop preview image into `dir` as <modId>.<ext>. Runs on the
+// metadata worker thread, so it deliberately takes everything by value and
+// touches NOTHING owned by the window.
+//
+// Two-step on purpose: the body lands in a .part file, gets sniffed for a real
+// image header, and is only then renamed into place. A CDN error page or a
+// truncated transfer therefore never becomes a "cached thumbnail" that would
+// suppress every later retry.
+void cachePreviewImage(const std::string& dir, const std::string& modId,
+                       const std::string& url) {
+  if (!isModIdDigits(modId)) return;  // the id is part of the path we build
+  const amucore::HttpsUrl u = amucore::splitHttpsUrl(url);
+  if (!u.ok) return;  // scraped from a Workshop page - see splitHttpsUrl
+
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  const std::string part = dir + "\\" + modId + ".part";
+  const fs::path partPath(toWide(part));
+  if (!amucore::httpDownloadFile(toWide(u.host), toWide(u.path), part)) {
+    fs::remove(partPath, ec);
+    return;
+  }
+
+  std::string head;
+  {
+    std::ifstream in(partPath, std::ios::binary);
+    char buf[16] = {};
+    in.read(buf, sizeof(buf));
+    head.assign(buf, static_cast<size_t>(in.gcount()));
+  }
+  const char* ext = imageExtFromMagic(head);
+  if (!ext || !*ext) {
+    fs::remove(partPath, ec);
+    return;
+  }
+
+  // Drop any stale copy under a different extension first, so previewFileFor()
+  // can never find two files for one mod.
+  for (const char* e : kPreviewExts)
+    fs::remove(fs::path(toWide(dir + "\\" + modId + "." + e)), ec);
+  fs::rename(partPath, fs::path(toWide(dir + "\\" + modId + "." + ext)), ec);
+  if (ec) fs::remove(partPath, ec);
 }
 
 // Case-insensitive path equality (NTFS semantics; lstrcmpiW handles non-ASCII).
@@ -285,17 +407,25 @@ class AmuWindow : public sciter::window {
       const bool installed = hasFolder && fileExists(folder + ".mod");
       const char* state = installed ? "ok" : (hasFolder ? "inc" : "no");
 
-      std::string name, size = "-", updated = "-", preview;
+      std::string name, size = "-", updated = "-", released = "-";
       for (const auto& m : mods) {
         if (std::to_string(m.modid) == id) {
           name = m.name;
           if (m.size > 0) size = humanSize(m.size);
-          if (!m.date.empty()) updated = m.date;
-          preview = m.preview;
+          if (!m.date.empty()) updated = m.date;      // Workshop "Updated"
+          if (!m.posted.empty()) released = m.posted;  // Workshop "Posted"
           break;
         }
       }
+      // Local install/update time = mtime of the .mod file AMU writes last.
+      const std::string installedAt = installed ? fileMtimeLocal(folder + ".mod") : std::string();
       if (name.empty()) name = "Mod " + id;
+
+      // The UI gets the CACHED FILE, not mods.preview (which holds the Workshop
+      // URL the downloader used). Empty until refreshModMeta() has fetched it -
+      // the UI then falls back to the grey placeholder box.
+      const std::string cached = previewFileFor(id);
+      const std::string preview = cached.empty() ? std::string() : fileUrl(cached);
 
       if (i) out += ",";
       out += "{\"id\":" + jstr(id);
@@ -303,6 +433,8 @@ class AmuWindow : public sciter::window {
       out += ",\"state\":\"" + std::string(state) + "\"";
       out += ",\"size\":" + jstr(size);
       out += ",\"updated\":" + jstr(updated);
+      out += ",\"released\":" + jstr(released);
+      out += ",\"installedAt\":" + jstr(installedAt.empty() ? std::string("-") : installedAt);
       out += ",\"preview\":" + jstr(preview);
       out += "}";
     }
@@ -387,8 +519,7 @@ class AmuWindow : public sciter::window {
     out += ",\"extraFlags\":" + jstr(lc.extraFlags);
 
     amucore::Server srv;
-    std::string sessionName, gamePort = "7777", queryPort = "27015";
-    std::string rconIp = "127.0.0.1", rconPort;
+    std::string sessionName, gamePort = "7777", queryPort = "27015", rconPort;
     bool rconEnabled = false;
     if (findServer(serverId, srv)) {
       const std::string ini = iniPathFor(srv.path);
@@ -397,15 +528,16 @@ class AmuWindow : public sciter::window {
       queryPort = amucore::iniRead(ini, "SessionSettings", "QueryPort", "27015");
       if (gamePort.empty()) gamePort = "7777";
       if (queryPort.empty()) queryPort = "27015";
-      const amucore::RconEndpoint ep = makeRconEndpoint(serverId);
-      rconIp = ep.host;
       rconPort = amucore::iniRead(ini, "ServerSettings", "RCONPort", "");
-      rconEnabled = ep.enabled;
+      rconEnabled = makeRconEndpoint(serverId).enabled;
     }
+    // No "rconIp" here on purpose: getServers() already emits it as the RAW
+    // MultiHome value ("" when unset), which is what the UI shows. Emitting the
+    // EFFECTIVE host (127.0.0.1 fallback) under the same key from a second
+    // binding invited a silent "not set" -> "127.0.0.1" mix-up.
     out += ",\"sessionName\":" + jstr(sessionName);
     out += ",\"gamePort\":" + jstr(gamePort);
     out += ",\"queryPort\":" + jstr(queryPort);
-    out += ",\"rconIp\":" + jstr(rconIp);
     out += ",\"rconPort\":" + jstr(rconPort);
     out += ",\"rconEnabled\":" + std::string(rconEnabled ? "true" : "false");
     out += "}";
@@ -746,8 +878,12 @@ class AmuWindow : public sciter::window {
   // Kick off an update run on the orchestrator worker (port of the "Install &&
   // Upgrade" button -> _DownloadAndInstallMods). serverId -1 = all servers,
   // onlyModId "" = all active mods. Returns false while a run is in progress.
-  bool startUpdate(int serverId, std::string onlyModId) {
-    return orchestrator_.start(serverId, onlyModId);
+  // onlyModIds: "" = every active mod, else a comma list (the Mods tab sends
+  // the missing ones, or the selected one). force: reinstall even when the
+  // manifest says up to date - the "Reinstall" button. Unlike the per-server
+  // force flag from the AutoIt days it does NOT skip the RCON player warning.
+  bool startUpdate(int serverId, std::string onlyModIds, bool force) {
+    return orchestrator_.start(serverId, onlyModIds, force);
   }
 
   // Snapshot of the running (or last) update run for the UI poll. JSON object:
@@ -824,11 +960,18 @@ class AmuWindow : public sciter::window {
     if (!haveRow) {
       row.modid = idNum;
       row.size = 0;
-      if (info.available) { row.name = info.name; row.preview = info.previewUrl; }
+      if (info.available) {
+        row.name = info.name;
+        row.preview = info.previewUrl;
+        row.date = info.date;      // was missing: an added mod showed "-" for
+        row.posted = info.posted;  // Updated until something else refreshed it
+      }
       db_.upsertMod(row);
     } else if (info.available) {
       row.name = info.name;
       row.preview = info.previewUrl;
+      row.date = info.date;
+      row.posted = info.posted;
       db_.upsertMod(row);
     }
 
@@ -876,6 +1019,47 @@ class AmuWindow : public sciter::window {
     return true;
   }
 
+  // Native folder picker for the server Path field (typing an ARK install root
+  // by hand is error-prone, and a wrong path only surfaces as "exe-not-found").
+  // `start` pre-selects a folder when it still exists. Returns "" on cancel.
+  std::string pickFolder(std::string title, std::string start) {
+    std::string picked;
+    // Sciter already runs an STA on this thread; RPC_E_CHANGED_MODE just means
+    // COM was initialised differently, in which case we must NOT uninitialise.
+    const HRESULT hrInit =
+        CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    IFileOpenDialog* dlg = nullptr;
+    if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+                                   IID_PPV_ARGS(&dlg)))) {
+      DWORD opts = 0;
+      if (SUCCEEDED(dlg->GetOptions(&opts)))
+        dlg->SetOptions(opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
+      if (!title.empty()) dlg->SetTitle(toWide(title).c_str());
+      if (!start.empty() && dirExists(start)) {
+        IShellItem* from = nullptr;
+        if (SUCCEEDED(SHCreateItemFromParsingName(toWide(start).c_str(), nullptr,
+                                                  IID_PPV_ARGS(&from)))) {
+          dlg->SetFolder(from);
+          from->Release();
+        }
+      }
+      if (SUCCEEDED(dlg->Show(get_hwnd()))) {
+        IShellItem* item = nullptr;
+        if (SUCCEEDED(dlg->GetResult(&item))) {
+          PWSTR path = nullptr;
+          if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path)) && path) {
+            picked = toUtf8(path);
+            CoTaskMemFree(path);
+          }
+          item->Release();
+        }
+      }
+      dlg->Release();
+    }
+    if (SUCCEEDED(hrInit)) CoUninitialize();
+    return picked;
+  }
+
   SOM_PASSPORT_BEGIN_EX(amu, AmuWindow)
     SOM_FUNCS(
       SOM_FUNC(ping),
@@ -891,6 +1075,7 @@ class AmuWindow : public sciter::window {
       SOM_FUNC(saveLaunchConfig),
       SOM_FUNC(saveServer),
       SOM_FUNC(deleteServerById),
+      SOM_FUNC(pickFolder),
       SOM_FUNC(addServer),
       SOM_FUNC(getGlobalSettings),
       SOM_FUNC(saveGlobalSettings),
@@ -904,12 +1089,166 @@ class AmuWindow : public sciter::window {
       SOM_FUNC(skipUpdateCountdown),
       SOM_FUNC(addMod),
       SOM_FUNC(removeMod),
+      SOM_FUNC(refreshModMeta),
+      SOM_FUNC(getModMetaStatus),
       SOM_FUNC(clearLogs),
       SOM_FUNC(getUpdateCheck),
       SOM_FUNC(checkAppUpdate),
       SOM_FUNC(installAppUpdate)
     )
   SOM_PASSPORT_END
+
+ private:
+  // --- Workshop metadata backfill --------------------------------------------
+  // A mod that only ever appeared in ActiveMods= (hand-edited ini, or a server
+  // adopted from the AutoIt app) has no cached name/date/preview, so the list
+  // showed "Mod <id>", "-" and an empty thumbnail. refreshModMeta() scrapes the
+  // gaps in the background; getModMetaStatus() writes the finished rows to the
+  // DB on the UI thread and tells the UI when a repaint is worth it.
+  struct ModMetaResult {
+    int64_t modid = 0;
+    std::string name;
+    std::string date;    // Workshop "Updated"
+    std::string posted;  // Workshop "Posted" - when the mod was first published
+    std::string previewUrl;
+  };
+  // Same shared_ptr discipline as UpdateCheckState: the worker touches only
+  // this struct and its own copies, NEVER `this` or db_ - a fetch in flight
+  // when the window dies just finishes into a struct nobody reads any more.
+  struct ModMetaState {
+    std::mutex m;
+    int total = 0;
+    int done = 0;
+    std::vector<ModMetaResult> pending;  // fetched, not yet written to the DB
+    // Ids already looked up this session. A removed/private Workshop item
+    // never yields data, so without this it would be scraped again on every
+    // visit to the Mods tab.
+    std::vector<std::string> tried;
+    std::atomic<bool> running{false};
+  };
+
+ public:
+  // Kick off one backfill pass for `serverId` (no-op while one is running).
+  // Only mods actually missing something are queued, so revisiting the Mods tab
+  // costs nothing once everything is cached.
+  std::string refreshModMeta(int serverId) {
+    std::shared_ptr<ModMetaState> st = modMeta_;
+    if (st->running.exchange(true)) return getModMetaStatus();
+
+    // Apply anything a previous pass left undrained (the UI stops polling when
+    // you leave the Mods tab) BEFORE deciding what is still missing - otherwise
+    // those mods would be scraped a second time.
+    const int carried = drainModMeta();
+
+    amucore::Server srv;
+    std::vector<std::string> todo;
+    if (findServer(serverId, srv)) {
+      const auto mods = db_.mods();
+      for (const std::string& id : amucore::readActiveMods(iniPathFor(srv.path))) {
+        if (!isModIdDigits(id)) continue;
+        const int64_t idNum =
+            static_cast<int64_t>(std::strtoull(id.c_str(), nullptr, 10));
+        bool haveName = false, havePosted = false;
+        for (const auto& m : mods)
+          if (m.modid == idNum) {
+            haveName = !m.name.empty();
+            havePosted = !m.posted.empty();  // "Released" - added in 2.0, so
+            break;                           // older rows lack it
+          }
+        if (haveName && havePosted && !previewFileFor(id).empty()) continue;
+        bool tried = false;
+        {
+          std::lock_guard<std::mutex> lk(st->m);
+          for (const std::string& t : st->tried)
+            if (t == id) { tried = true; break; }
+        }
+        if (!tried) todo.push_back(id);
+      }
+    }
+    {
+      std::lock_guard<std::mutex> lk(st->m);
+      st->total = static_cast<int>(todo.size());
+      st->done = 0;
+      for (const std::string& id : todo) st->tried.push_back(id);
+    }
+    if (todo.empty()) {
+      st->running.store(false);
+      return modMetaJson(carried);
+    }
+
+    const std::string dir = previewDirNextToExe();
+    std::thread([st, todo, dir]() {
+      std::error_code ec;
+      std::filesystem::create_directories(std::filesystem::path(toWide(dir)), ec);
+      for (const std::string& id : todo) {
+        const uint64_t idNum = std::strtoull(id.c_str(), nullptr, 10);
+        const amucore::WorkshopModInfo info = amucore::getModInfo(idNum);
+        if (info.available && !info.previewUrl.empty())
+          cachePreviewImage(dir, id, info.previewUrl);
+        {
+          std::lock_guard<std::mutex> lk(st->m);
+          // available=false covers both "item removed" and "network error"
+          // (see getModInfo), and neither should overwrite a cached name.
+          if (info.available) {
+            st->pending.push_back(ModMetaResult{static_cast<int64_t>(idNum),
+                                                info.name, info.date, info.posted,
+                                                info.previewUrl});
+          }
+          st->done++;
+        }
+      }
+      st->running.store(false);
+    }).detach();
+    return modMetaJson(carried);
+  }
+
+  // Drain + progress, the binding the UI polls. `applied` > 0 is its cue to
+  // re-read the mod list and repaint.
+  std::string getModMetaStatus() { return modMetaJson(drainModMeta()); }
+
+ private:
+  // Write everything the worker has finished to the DB and return how many rows
+  // landed. Runs on the UI thread, which is the one that owns db_.
+  int drainModMeta() {
+    std::vector<ModMetaResult> take;
+    {
+      std::lock_guard<std::mutex> lk(modMeta_->m);
+      take.swap(modMeta_->pending);
+    }
+    if (take.empty()) return 0;
+
+    int applied = 0;
+    const auto mods = db_.mods();
+    for (const ModMetaResult& r : take) {
+      amucore::Mod row;
+      row.modid = r.modid;
+      for (const auto& m : mods)
+        if (m.modid == r.modid) { row = m; break; }  // keep size/manifest/...
+      if (!r.name.empty()) row.name = r.name;
+      if (!r.previewUrl.empty()) row.preview = r.previewUrl;
+      if (!r.date.empty()) row.date = r.date;
+      if (!r.posted.empty()) row.posted = r.posted;
+      if (db_.upsertMod(row)) ++applied;
+    }
+    return applied;
+  }
+
+  std::string modMetaJson(int applied) {
+    int total = 0;
+    int done = 0;
+    const bool running = modMeta_->running.load();
+    {
+      std::lock_guard<std::mutex> lk(modMeta_->m);
+      total = modMeta_->total;
+      done = modMeta_->done;
+    }
+    return "{\"running\":" + std::string(running ? "true" : "false") +
+           ",\"total\":" + std::to_string(total) +
+           ",\"done\":" + std::to_string(done) +
+           ",\"applied\":" + std::to_string(applied) + "}";
+  }
+
+ public:
 
  private:
   // Mutex-guarded app-update snapshot. Held by shared_ptr so the detached check
@@ -1007,6 +1346,19 @@ class AmuWindow : public sciter::window {
     in.battleye = lc.battleye != 0;
     in.crossplay = lc.crossplay != 0;
     in.autoManaged = lc.autoManaged != 0;
+    // -automanagedmods makes the SERVER download/install mods itself and reads
+    // the ids from Game.ini [ModInstaller] ModIDS= (one line each; the wiki:
+    // "Mod IDs are listed in Game.ini under [ModInstaller]") - i.e. a second
+    // copy of the list the Mods tab keeps in ActiveMods=. Mirror it here, at
+    // the moment the server is about to read it, so the two can never diverge;
+    // the Config tab deliberately has no ModIDS editor for the same reason.
+    // With the flag off ModIDS is inert and Game.ini stays untouched.
+    if (in.autoManaged && in.game == amucore::ArkGame::ASE) {
+      std::vector<std::string> lines;
+      for (const std::string& id : amucore::readActiveMods(ini)) lines.push_back("ModIDS=" + id);
+      amucore::iniReplaceKeyLines(iniPathForFile(srv.path, "game"), "ModInstaller", "ModIDS",
+                                  lines);
+    }
     in.clusterId = lc.clusterId;
     in.clusterDir = lc.clusterDir;
     in.perfFlags = lc.perfFlags;
@@ -1057,6 +1409,7 @@ class AmuWindow : public sciter::window {
   amucore::Supervisor supervisor_;
   amucore::Orchestrator orchestrator_;
   std::shared_ptr<UpdateCheckState> update_ = std::make_shared<UpdateCheckState>();
+  std::shared_ptr<ModMetaState> modMeta_ = std::make_shared<ModMetaState>();
 };
 
 // Build a file:// URL for a path next to the exe.
@@ -1086,6 +1439,22 @@ int uimain(std::function<int()> run) {
 
   sciter::om::hasset<AmuWindow> pwin = new AmuWindow();
   pwin->load(url.c_str());
+
+  // The exe's icon resource covers Explorer and the taskbar, but the title-bar
+  // icon comes from the WINDOW - Sciter registers its window class without one,
+  // so it has to be set explicitly or Windows draws its generic default.
+  if (HWND hwnd = pwin->get_hwnd()) {
+    const HINSTANCE inst = GetModuleHandleW(nullptr);
+    if (HICON big = static_cast<HICON>(LoadImageW(inst, MAKEINTRESOURCEW(1), IMAGE_ICON,
+                                                  GetSystemMetrics(SM_CXICON),
+                                                  GetSystemMetrics(SM_CYICON), 0)))
+      SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(big));
+    if (HICON small_ = static_cast<HICON>(LoadImageW(inst, MAKEINTRESOURCEW(1), IMAGE_ICON,
+                                                     GetSystemMetrics(SM_CXSMICON),
+                                                     GetSystemMetrics(SM_CYSMICON), 0)))
+      SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(small_));
+  }
+
   pwin->expand();
   return run();
 }

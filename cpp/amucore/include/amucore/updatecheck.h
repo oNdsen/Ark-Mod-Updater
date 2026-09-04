@@ -5,16 +5,17 @@
 #include <vector>
 
 // Self-update support for the C++ AMU. Unlike the single-exe AutoIt app, the
-// package is multi-file (amu.exe + sciter.dll + ui/*), so the update channel is
-// manifest-based and hash-verified (the "hardened updater" plan):
+// package is multi-file (amu.exe + sciter.dll + lib/amu_updater.exe), so the
+// update channel is manifest-based and hash-verified:
 //
-//   https://ondsen.ch/files/amu/v2/version.txt    plain version, e.g. "0.10.0"
-//   https://ondsen.ch/files/amu/v2/manifest.txt   one file per line:
-//                                                 <relpath>|<sha256 lowercase hex>|<size>
-//   https://ondsen.ch/files/amu/v2/<relpath>      the file contents
+//   <channel>/version.txt   plain version, e.g. "2.0.0"
+//   <channel>/manifest.txt  one line per file:
+//                           <relpath>|<sha256 lowercase hex>|<size>
+//   <channel>/<asset>       the file contents, under its FLAT asset name
 //
-// (v2 subfolder so the legacy AutoIt channel at /files/amu/ stays untouched.
-// publish.ps1 produces the whole folder from a build.) The in-app check reads
+// The channel is this repo's "latest" GitHub release (see the constants at the
+// bottom); publish.ps1 produces the whole asset set from a build. The in-app
+// check reads
 // version.txt and compares against amucore::version(); the standalone
 // updater.exe downloads every manifest file, verifies each SHA-256, then swaps
 // all files with rollback and relaunches amu.exe. Everything here is shared by
@@ -42,6 +43,22 @@ Manifest parseManifest(const std::string& text, const std::string& version);
 // a < b, 0 when equal, positive when a > b. Missing segments count as 0; any
 // non-numeric suffix in a segment is ignored ("0.10.0-dev" -> 0.10.0).
 int compareVersions(const std::string& a, const std::string& b);
+
+// An absolute https URL split into the two pieces the WinHTTP helpers below
+// take. `ok` is false for anything they cannot faithfully request.
+struct HttpsUrl {
+  bool ok = false;
+  std::string host;
+  std::string path;  // always starts with '/', fragment stripped
+};
+
+// PURE: "https://host/a/b?c=d" -> host "host", path "/a/b?c=d". Deliberately
+// strict, because the one caller feeds it a URL SCRAPED FROM A WORKSHOP PAGE:
+// anything but plain https is rejected, as are userinfo ("user@evil/") and an
+// explicit port (the helpers always connect to 443 and send no credentials, so
+// those would silently reach a different endpoint than the URL claims), plus
+// any control character that could smuggle a second request line.
+HttpsUrl splitHttpsUrl(const std::string& url);
 
 // WinHTTP GET https://<host><path> -> body as a string; "" on any failure
 // (network, non-2xx). Small text payloads only (version/manifest).

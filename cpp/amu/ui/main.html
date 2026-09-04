@@ -33,6 +33,40 @@ html, body {
 }
 body { display: flex; flex-direction: column; overflow: hidden; }
 
+/* ---------- scrollbars ---------- */
+/* Sciter draws its own scrollbars (the light Windows-style bars are merely its
+   built-in default) and styles them through @set blocks assigned per element:
+   slim rounded thumb, no arrow buttons, track that blends into the panel.
+   Assigned to the elements that actually scroll, never via `*`. Both .base and
+   .back are styled because the SDK samples name the track part differently
+   across engine versions.
+   History: this block was once blamed for the sciter.dll crash at offset
+   0x126f7a and removed; the real cause was a display-toggled child of a hidden
+   container in the Config tab (see buildCfgRow). Re-added after the harness
+   showed 0 crashes in 8 runs with it in place. */
+@set amu-vscroll {
+  .prev, .next { display: none; }
+  .base, .back, .prev-page, .next-page { background: transparent; }
+  .base, .back { width: 10px; }
+  .slider { background: #2B3442; border-radius: 5px; margin: 2px; }
+  .slider:hover { background: #3A4556; }
+  .slider:active { background: #4A5768; }
+  .corner { background: transparent; }
+}
+@set amu-hscroll {
+  .prev, .next { display: none; }
+  .base, .back, .prev-page, .next-page { background: transparent; }
+  .base, .back { height: 10px; }
+  .slider { background: #2B3442; border-radius: 5px; margin: 2px; }
+  .slider:hover { background: #3A4556; }
+  .slider:active { background: #4A5768; }
+  .corner { background: transparent; }
+}
+#content, #updbox, .combolist, textarea, #modal .txt {
+  vertical-scrollbar: amu-vscroll;
+  horizontal-scrollbar: amu-hscroll;
+}
+
 /* ---------- header ---------- */
 header {
   display: flex;
@@ -42,11 +76,10 @@ header {
   border-bottom: 1px solid var(--line);
   padding: 15px 22px;
 }
-header .logo {
-  width: 22px; height: 22px;
-  border-radius: 6px;
-  background: var(--accent);
-}
+/* The app icon itself (same artwork as amu.ico / the window + taskbar icon).
+   Relative URL on purpose: resolves under this://app/ when ui/ is packed into
+   the exe AND under file:// when a loose dev ui\ folder next to amu.exe wins. */
+header .logo { width: 24px; height: 24px; }
 header h1 {
   font-size: 14px;
   font-weight: 600;
@@ -234,6 +267,60 @@ header > *, footer > *, .nav > *, .pills > span, .thead > *, .trow > *, .kv > *,
   z-index: 1000;
 }
 
+/* "Workshop lookup running" state: the chip next to the Mods crumb and the
+   placeholder thumbnails still waiting for an image. The pulse is a plain
+   opacity animation - the one thing every engine handles - and if it were
+   ignored the elements still read as a dimmed placeholder, so the screen never
+   looks broken, only static. */
+@keyframes amupulse { 0% { opacity: 0.3; } 50% { opacity: 1; } 100% { opacity: 0.3; } }
+.loadchip { display: none; margin-left: 10px; font-size: 11.5px; font-weight: normal; color: var(--muted); }
+.loadchip.on { display: inline-block; }
+.loadchip .dot {
+  display: inline-block;
+  width: 7px; height: 7px;
+  border-radius: 4px;
+  background: var(--accent);
+  margin-right: 6px;
+  vertical-align: middle;
+  animation: amupulse 1s linear infinite;
+}
+.c-thumb .box.loading { animation: amupulse 1.2s linear infinite; }
+#preview .img.loading { animation: amupulse 1.2s linear infinite; }
+
+/* confirm modal: backdrop + centered card. Replaces the old two-click
+   "Really remove?" arming of the button itself, which a double-click could
+   fire straight through. */
+#modal {
+  position: fixed; left: 0; top: 0; width: 100%; height: 100%;
+  /* Sciter does not resolve height:100% on a fixed element against the
+     window (the overlay collapsed to the card's height and sat at the top, no
+     backdrop). Viewport units win where supported; askConfirm additionally
+     sets an explicit pixel size from window.innerWidth/Height on open. */
+  width: 100vw; height: 100vh;
+  background: rgba(0,0,0,0.55);
+  display: none;
+  z-index: 50;
+}
+#modal.on { display: block; }
+/* The card is placed by askConfirm in pixels: with the overlay as a flex
+   container Sciter honoured justify-content but not align-items, so the card
+   stretched from top to bottom. Same measure-and-place approach as the tooltip. */
+#modal .card {
+  position: absolute; left: 0; top: 0;
+  width: 440px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 18px 20px;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+}
+#modal h3 { margin: 0 0 8px 0; font-size: 14px; font-weight: 600; }
+/* .txt is what scrolls when the card would not fit the window: askConfirm
+   caps its max-height (window minus margin minus title/buttons) on open */
+#modal .txt { font-size: 12.5px; color: var(--muted); line-height: 1.5; white-space: pre-wrap; overflow-y: auto; }
+#modal .btns { display: flex; justify-content: flex-end; margin-top: 16px; }
+#modal .btns button { margin: 0 0 0 8px; }
+
 /* preview card */
 #preview {
   width: 230px;
@@ -277,7 +364,10 @@ button {
 button:hover { background: var(--card-hover); border-color: #34404f; }
 button.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
 button.primary:hover { background: #54E899; border-color: #54E899; }
-button.danger { color: var(--danger); }
+/* destructive actions (Remove Mod, Delete Server): red text + red edge, red
+   tint on hover - unmistakable next to the neutral buttons */
+button.danger { color: var(--danger); border-color: rgba(223,53,53,0.45); }
+button.danger:hover { background: rgba(223,53,53,0.14); border-color: var(--danger); }
 
 /* server form */
 .form { display: flex; gap: 16px; }
@@ -300,6 +390,42 @@ button.danger { color: var(--danger); }
   font-family: "Segoe UI", system-ui, sans-serif;
 }
 .field input:focus { border-color: var(--accent); }
+/* Path field + "Browse..." button on one row (button matches the 36px input) */
+.pathrow { display: flex; width: 100%; }
+/* Two Sciter quirks in one rule:
+   1. `.field input` sets `width: 100%` and Sciter's flex does NOT let
+      flex-basis override it, so the input kept the full row width and shoved
+      the button past the panel edge -> `width: auto` is the actual fix.
+   2. Only the `flex` SHORTHAND is honoured; flex-grow/-basis longhands are
+      ignored (that is why `.colw { flex: 1 }` works and a longhand column
+      collapses to its content). max-width stays as the hard guard. */
+.pathrow input {
+  width: auto;
+  flex: 1;
+  max-width: calc(100% - 104px);
+}
+/* box-sizing is the point: the base `button` rule has none, so height:36px was
+   CONTENT height and padding+border made the button 52px tall next to a 36px
+   input. Fixed width keeps the input's max-width math exact (96 + 8 margin). */
+.pathrow button {
+  flex: none;
+  box-sizing: border-box;
+  width: 96px; height: 36px; line-height: 20px;
+  padding: 7px 16px;
+  margin: 0 0 0 8px;
+}
+
+/* Add Server lays its fields out as ONE full-width column (the Server screen
+   keeps its two): every control spans the whole content area and its companion
+   - the Game pills, the Browse button - sits flush on the right edge. */
+.form.onecol { display: block; }
+.form.onecol .colw { width: 100%; }
+.widerow { display: flex; align-items: flex-start; }
+/* `flex: 1` shorthand, exactly like `.colw` - see the .pathrow note above for
+   why the flex-grow longhand collapses the field to nothing here. */
+.widerow > .fgrow { flex: 1; }
+.widerow > .fright { flex: none; margin-left: 16px; }
+.gamesel span:last-child { margin-right: 0; }  /* pills end ON the right edge */
 
 /* combobox: free-text input + a caret button opening a suggestion list (used for
    the Map field: official maps per game, but any custom/mod map can be typed) */
@@ -315,15 +441,17 @@ button.danger { color: var(--danger); }
   border-radius: 0 7px 7px 0;
 }
 .combo .caret:hover { background: var(--card-hover); }
-/* the triangle is stacked from four 1px bars: Sciter renders neither font
-   glyphs (blurry), transparent-border triangles (collapse) nor inline SVG -
-   plain solid divs are the one thing that draws crisply everywhere */
-.combo .caret div { position: absolute; left: 50%; height: 1px; background: var(--muted); }
-.combo .caret:hover div { background: var(--text); }
-.combo .caret .b1 { width: 8px; margin-left: -4px; top: 15px; }
-.combo .caret .b2 { width: 6px; margin-left: -3px; top: 16px; }
-.combo .caret .b3 { width: 4px; margin-left: -2px; top: 17px; }
-.combo .caret .b4 { width: 2px; margin-left: -1px; top: 18px; }
+/* The arrow is a plain text glyph centered by line-height. Everything else was
+   tried and did not render in Sciter (CSS border-triangles collapse, inline SVG
+   and absolutely-positioned bar-divs draw nothing); a glyph does render. The
+   field itself is clickable too, so the combobox works even if it looks off. */
+.combo .caret {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 34px;
+  text-align: center;
+}
+.combo .caret:hover { color: var(--text); }
 .combolist {
   position: absolute;
   /* explicit px offsets + width: Sciter resolves neither top:100% nor
@@ -393,6 +521,9 @@ button.danger { color: var(--danger); }
 .muted-note { margin-top: 12px; font-size: 12px; color: var(--muted); }
 .qmark { color: var(--muted); cursor: pointer; }
 
+/* "Starting..." / "Stopping..." placeholders in the lifecycle group */
+button:disabled { opacity: 0.55; cursor: default; }
+button:disabled:hover { background: transparent; border-color: var(--line); }
 /* thin vertical separator between lifecycle and config buttons */
 .actions .sep { display: inline-block; width: 1px; height: 22px; background: var(--line); margin: 0 12px 0 4px; }
 
@@ -416,6 +547,20 @@ button.danger { color: var(--danger); }
   margin-right: 10px;
 }
 .cfgbar input:focus { border-color: var(--accent); }
+/* "Only set" in the bar: the launch-option toggle widget, tightened to bar height */
+.cfgbar .toggle { flex: none; margin: 0 0 0 10px; padding: 5px 12px 5px 7px; }
+/* collapse/expand all + the per-category fold (state in cfgState.collapsed) */
+.cfgfold { font-size: 11.5px; color: var(--accent); cursor: pointer; }
+.cfgfold:hover { text-decoration: underline; }
+.cfgfoldsep { color: var(--muted); margin: 0 6px; font-size: 11.5px; }
+.cfgcount { margin-left: 14px; }
+.cfgcat { cursor: pointer; }
+.cfgcat:hover { color: var(--text); }
+.cfgcat .caret { display: inline-block; width: 14px; color: var(--muted); }
+/* inline-block: Sciter drops the margin on a plain inline span, so the count
+   rendered glued to the name ("GENERAL21") */
+.cfgcat .n { display: inline-block; margin-left: 10px; color: var(--muted); font-weight: normal; letter-spacing: 0; }
+.cfggroup.folded { display: none; }
 /* dark select: style select AND option (Sciter popup list takes the option colors) */
 select.cfgsel {
   height: 34px;
@@ -497,10 +642,25 @@ select.cfgsel option { background: #161A22; color: var(--text); }
   font-family: Consolas, monospace;
   font-size: 12px;
   line-height: 1.5;
+  /* Same recipe as .cfgraw above. Without it Sciter renders the text wrapped
+     but still sizes the content box to the UNWRAPPED line, so the field grew a
+     horizontal scrollbar that scrolled already-wrapped text sideways. break-all
+     is not optional here: an ARK family line
+     (HarvestResourceItemAmountClassMultipliers=(ClassName="...",Multiplier=2.0))
+     contains no spaces, so ordinary word wrapping cannot break it at all. */
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow-x: hidden;
 }
 .cfgedit textarea:focus { border-color: var(--accent); }
 .cfgedit textarea.invalid { border-color: var(--danger); }
 .cfgtabtns { margin-top: 8px; }
+/* example line under a family editor (see the "No placeholder" note in
+   buildCfgRow): stays visible while editing and inserts with one click */
+.cfgexample { font-size: 11px; color: var(--muted); margin-top: 6px; word-break: break-all; }
+.cfgexample .ex { font-family: Consolas, monospace; }
+.cfgexample .ex-use { color: var(--accent); cursor: pointer; margin-left: 8px; }
+.cfgexample .ex-use:hover { text-decoration: underline; }
 .cfgreset { flex: none; width: 22px; text-align: center; color: var(--muted); cursor: pointer; margin-left: 8px; font-size: 13px; }
 .cfgreset:hover { color: var(--danger); }
 
@@ -592,6 +752,9 @@ select.cfgsel option { background: #161A22; color: var(--text); }
 }
 .addmodrow input:focus { border-color: var(--accent); }
 .addmodrow .am-note { color: var(--warn); font-size: 12px; margin-left: 4px; }
+/* straight to the ARK Workshop - the field wants an id you have to look up */
+.addmodrow .am-browse { color: var(--accent); font-size: 12px; cursor: pointer; margin-left: 6px; }
+.addmodrow .am-browse:hover { text-decoration: underline; }
 
 /* ---------- add-server + settings screens ---------- */
 .fhint { font-size: 11px; color: var(--muted); margin-top: 4px; }
@@ -650,7 +813,7 @@ footer a:hover { color: var(--accent); text-decoration: underline; }
 <body>
 
 <header>
-  <div class="logo"></div>
+  <img class="logo" src="logo.png">
   <h1>ARK MOD UPDATER</h1>
 </header>
 
@@ -674,6 +837,12 @@ footer a:hover { color: var(--accent); text-decoration: underline; }
 </footer>
 
 <div id="tooltip"></div>
+<!-- confirm modal (askConfirm): backdrop + card, filled per call -->
+<div id="modal"><div class="card">
+  <h3></h3>
+  <div class="txt"></div>
+  <div class="btns"><button class="m-cancel">Cancel</button><button class="m-ok">OK</button></div>
+</div></div>
 
 <!-- plain (non-module) script defining global CONFIG_SCHEMA; must load before the module below -->
 <script src="config_schema.js"></script>
@@ -681,6 +850,9 @@ footer a:hover { color: var(--accent); text-decoration: underline; }
 const URL_SITE = "https://ondsen.ch";
 const URL_PAYPAL = "https://www.paypal.com/cgi-bin/webscr?cmd=_s-xclick&hosted_button_id=7H8LA6ZSYS752";
 const URL_WS = "https://steamcommunity.com/sharedfiles/filedetails/?id=";
+// The ARK: Survival Evolved Workshop (app 346110) - where the mod ids the
+// Add-Mod field wants actually come from.
+const URL_WS_BROWSE = "https://steamcommunity.com/app/346110/workshop/";
 
 // Open a URL in the default browser: Sciter (env.launch) or plain browser fallback.
 async function openExternal(url) {
@@ -782,19 +954,25 @@ const STUB_INI_GAME = { sections: [
 // where the STUB_* data keeps the design preview working.
 const NATIVE = (typeof Window !== "undefined" && Window.this && Window.this.amu) ? Window.this.amu : null;
 
+// NOTE on every loader below: when NATIVE exists the native branch is TERMINAL -
+// a failed call returns empty, never the STUB_* data. Falling through to stubs
+// while NATIVE is live would show fake servers with ids 1/2, and the next
+// "Save Server" / "Delete" would then write those fake values onto REAL database
+// rows. Stubs are only ever reached in the plain-browser design preview.
 function loadServers() {
   if (NATIVE) {
     try {
       const arr = JSON.parse(NATIVE.getServers());
       arr.forEach(s => { s.mods = null; });  // mods loaded lazily, per server
       return arr;
-    } catch (e) { console.log("getServers failed: " + e); }
+    } catch (e) { console.log("getServers failed: " + e); return []; }
   }
   return STUB_SERVERS;
 }
 function loadLogs() {
   if (NATIVE) {
-    try { return JSON.parse(NATIVE.getLogs(200)); } catch (e) { console.log("getLogs failed: " + e); }
+    try { return JSON.parse(NATIVE.getLogs(200)); }
+    catch (e) { console.log("getLogs failed: " + e); return []; }
   }
   return STUB_LOGS;
 }
@@ -852,8 +1030,68 @@ document.addEventListener("click", (e) => {
 
 // Custom mouse-following tooltip (no title attribute; not clipped by the table).
 const tooltip = $("#tooltip");
+// One global tooltip element. It is closed by the tipped element's mouseleave -
+// which never fires when a click rebuilds the screen (render()) and the element
+// under the mouse simply disappears: the tip stayed on screen. So every click
+// on a tipped element and every render() hide it explicitly.
+function hideTip() { tooltip.style.display = "none"; }
+
+// Confirm modal. opts: { title, text, okLabel, danger, onOk }. Cancel, the
+// backdrop and Escape close it without calling onOk; only the OK button does.
+// Text is set via textContent, so names from the ini/Workshop are safe in it.
+const modal = $("#modal");
+function askConfirm(opts) {
+  hideTip();
+  $("h3", modal).textContent = opts.title || "Are you sure?";
+  $(".txt", modal).textContent = opts.text || "";
+  const ok = $(".m-ok", modal);
+  ok.textContent = opts.okLabel || "OK";
+  ok.className = "m-ok " + (opts.danger ? "danger" : "primary");
+  modal._onOk = opts.onOk || null;
+  // explicit window-sized box - see the #modal CSS note
+  const w = window.innerWidth || document.body.offsetWidth || 1000;
+  const h = window.innerHeight || document.body.offsetHeight || 700;
+  modal.style.width = w + "px";
+  modal.style.height = h + "px";
+  // Center the card by hand (see the #modal .card CSS note): show the overlay,
+  // let layout settle, then measure the card and place it. Hidden until
+  // placed, so it never flashes at the top-left corner.
+  const card = $(".card", modal);
+  card.style.visibility = "hidden";
+  modal.classList.add("on");
+  const place = () => {
+    const pad = 20;  // breathing room to the window edge
+    const maxCardH = Math.max(120, h - 2 * pad);
+    card.style.width = Math.min(440, Math.max(240, w - 2 * pad)) + "px";
+    // Taller than the window? Cap the card and let the text scroll: max text
+    // height = card cap minus padding, title, buttons and their margins.
+    const txt = $(".txt", modal), h3 = $("h3", modal), btns = $(".btns", modal);
+    txt.style.maxHeight = "";
+    if ((card.offsetHeight || 0) > maxCardH) {
+      const chrome = 36 + (h3.offsetHeight || 20) + 8 + (btns.offsetHeight || 34) + 16;
+      txt.style.maxHeight = Math.max(60, maxCardH - chrome) + "px";
+    }
+    const cw = card.offsetWidth || 440;
+    const ch = Math.min(card.offsetHeight || 200, maxCardH);
+    card.style.left = Math.max(0, Math.round((w - cw) / 2)) + "px";
+    card.style.top = Math.max(0, Math.round((h - ch) / 2)) + "px";
+    card.style.visibility = "visible";
+  };
+  setTimeout(place, 0);
+  setTimeout(place, 40);  // once more after the max-height took effect
+}
+function closeConfirm() { modal.classList.remove("on"); modal._onOk = null; }
+$(".m-cancel", modal).addEventListener("click", closeConfirm);
+$(".m-ok", modal).addEventListener("click", () => { const f = modal._onOk; closeConfirm(); if (f) f(); });
+modal.addEventListener("click", (e) => { if (e.target === modal) closeConfirm(); });
+document.addEventListener("keydown", (e) => {
+  if (!modal.classList.contains("on")) return;
+  if (e.key === "Escape" || e.code === "Escape" || e.keyCode === 27) closeConfirm();
+});
+
 function attachTip(elem, text) {
   if (!elem) return;
+  elem.addEventListener("click", hideTip);
   elem.addEventListener("mouseenter", () => { tooltip.textContent = text; tooltip.style.display = "block"; });
   elem.addEventListener("mousemove", (e) => {
     const x = (e.clientX !== undefined ? e.clientX : e.x);
@@ -963,6 +1201,66 @@ function startStatusPolling() {
   statusTimer = setInterval(pollStatuses, 2000);
 }
 
+// --- Workshop metadata backfill ---------------------------------------------
+// A mod that only ever appeared in ActiveMods= was never looked up on the
+// Workshop, so it had no name, no date and no thumbnail. The native side
+// scrapes the gaps in the background and caches each preview image on disk; we
+// poll until it reports done and repaint whenever rows actually land.
+let modMetaTimer = null;
+// What the Mods screen paints its loading state from: rows without a cached
+// image show a pulsing placeholder while `running`, instead of the images just
+// appearing out of nowhere a few seconds later.
+let modMetaInfo = { running: false, total: 0, done: 0 };
+function stopModMetaPoll() {
+  if (modMetaTimer) { clearInterval(modMetaTimer); modMetaTimer = null; }
+  modMetaInfo = { running: false, total: 0, done: 0 };
+  paintModMetaChip();
+}
+// Repaint just the chip - the poll ticks every 1.5s and must not rebuild the DOM.
+function paintModMetaChip() {
+  const c = $("#modmeta");
+  if (!c) return;
+  const on = !!modMetaInfo.running;
+  c.classList.toggle("on", on);
+  if (!on) return;
+  const n = modMetaInfo.total;
+  $(".txt", c).textContent =
+    "Loading Workshop info" + (n ? " " + (modMetaInfo.done + 1) + "/" + n : "") + "...";
+}
+function applyModMeta(json) {
+  let st = null;
+  try { st = JSON.parse(json); } catch (e) { console.log("modMeta parse failed: " + e); }
+  if (!st) { stopModMetaPoll(); return; }
+  modMetaInfo = { running: !!st.running, total: st.total || 0, done: st.done || 0 };
+  paintModMetaChip();
+  if (st.applied > 0) {
+    for (const s of servers) s.mods = null;  // drop the cached list -> re-read
+    // setTimeout, because this is also reached from inside renderMods (the
+    // kickoff call): re-entering render() there would tear down the DOM that
+    // call is still building.
+    setTimeout(() => { if (screen === "mods") render(); }, 0);
+  }
+  if (!st.running) stopModMetaPoll();
+}
+function startModMetaRefresh(serverId) {
+  if (!NATIVE || serverId === undefined || serverId === null) return;
+  try { applyModMeta(NATIVE.refreshModMeta(serverId)); }
+  catch (e) { console.log("refreshModMeta failed: " + e); return; }
+  if (modMetaTimer) return;
+  modMetaTimer = setInterval(() => {
+    try { applyModMeta(NATIVE.getModMetaStatus()); }
+    catch (e) { console.log("getModMetaStatus failed: " + e); stopModMetaPoll(); }
+  }, 1500);
+}
+
+// The native side hands back a file:// URL into the local preview cache; the
+// browser-preview stubs still carry https ones. Anything else is not an image.
+function isPreviewUrl(u) {
+  const s = String(u || "");
+  return s.indexOf("file://") === 0 || s.indexOf("https://") === 0 ||
+         s.indexOf("http://") === 0;
+}
+
 // Repaint only the sidebar dots in place (no DOM rebuild every 2s).
 function paintSidebarDots() {
   const rows = $("#servers").children;
@@ -978,6 +1276,42 @@ function paintStatusCard() {
   card.innerHTML = `<div class="${dotClasses(st)}"></div>
       <div class="scol"><div class="slabel">${st ? (stateNames[st.state] || st.state) : "Unknown"}</div>
       <div class="ssub">${stateSub(st)}</div></div>`;
+  paintLifecycle(false);
+}
+
+// Which lifecycle buttons make sense follows the LIVE state - a Restart on a
+// stopped server or a Start on a running one is just noise:
+//   stopped / crashed / failed / unknown -> [Start]
+//   running                              -> [Stop] [Restart]
+//   starting                             -> [Stop] + "Starting..." (disabled)
+//   stopping                             -> "Stopping..." (disabled)
+// Repainted only when the state actually changes, because paintStatusCard runs
+// on the 2s poll and rebuilding buttons under the mouse would eat clicks.
+let lifecycleState = null;
+function paintLifecycle(force, boxOpt) {
+  const box = boxOpt || $("#lifecycle");
+  if (!box || !servers[cur]) return;
+  const st = lastStatus[sid(servers[cur], cur)];
+  const state = st ? st.state : "unknown";
+  if (!force && state === lifecycleState) return;
+  lifecycleState = state;
+  const s = servers[cur];
+  let html;
+  if (state === "running")
+    html = `<button class="b-stop">Stop</button><button class="b-restart">Restart</button>`;
+  else if (state === "starting")
+    html = `<button class="b-stop">Stop</button><button disabled>Starting...</button>`;
+  else if (state === "stopping")
+    html = `<button disabled>Stopping...</button>`;
+  else
+    html = `<button class="primary b-start">Start</button>`;
+  box.innerHTML = html;
+  const bs = $(".b-start", box);
+  if (bs) bs.addEventListener("click", () => doServerAction(s, cur, "start"));
+  const bp = $(".b-stop", box);
+  if (bp) bp.addEventListener("click", () => doServerAction(s, cur, "stop"));
+  const br = $(".b-restart", box);
+  if (br) br.addEventListener("click", () => doServerAction(s, cur, "restart"));
 }
 
 // Start/Stop/Restart: fire-and-forget native call (the supervisor only flips
@@ -1015,13 +1349,14 @@ let updTarget = null;  // { serverId, note } of the run the screen was opened fo
 // Browser-preview stub: a time-scripted fake update run so the screen is fully
 // previewable (collect -> download w/ lines -> 5s countdown -> install -> done).
 let STUB_UPD = null;   // { t0, ids } - everything else derives from elapsed time
-function stubStartUpdate(serverId, onlyModId) {
+function stubStartUpdate(serverId, onlyModIds) {
+  const only = onlyModIds ? String(onlyModIds).split(",") : [];  // same comma list as native
   if (STUB_UPD && stubUpdStatus().running) return false;
   const ids = [];
   servers.forEach((sv, i) => {
     if (serverId !== -1 && sid(sv, i) !== serverId) return;
     (sv.mods || []).forEach(m => {
-      if ((onlyModId === "" || m.id === onlyModId) && ids.indexOf(m.id) < 0) ids.push(m.id);
+      if ((only.length === 0 || only.indexOf(m.id) >= 0) && ids.indexOf(m.id) < 0) ids.push(m.id);
     });
   });
   STUB_UPD = { t0: Date.now(), ids };
@@ -1091,13 +1426,15 @@ function loadUpdateStatus() {
 // Kick off a run and switch to the update screen. A false return from
 // startUpdate means a run is already in progress - the screen then simply
 // shows that running run, with an inline note.
-function startUpdateRun(serverId, onlyModId) {
+// onlyModIds: "" = all active mods, else a comma list. force: reinstall even
+// when steamcmd reports the mod up to date (the "Reinstall" button).
+function startUpdateRun(serverId, onlyModIds, force) {
   let ok = false;
   if (NATIVE) {
-    try { ok = NATIVE.startUpdate(serverId, onlyModId); }
+    try { ok = NATIVE.startUpdate(serverId, onlyModIds, !!force); }
     catch (e) { console.log("startUpdate failed: " + e); }
   } else {
-    ok = stubStartUpdate(serverId, onlyModId);
+    ok = stubStartUpdate(serverId, onlyModIds);
   }
   updTarget = { serverId, note: ok ? "" : "An update is already running - showing the running update." };
   screen = "update";
@@ -1238,20 +1575,30 @@ function renderMods(host) {
   const s = servers[cur];
   const list = ensureMods(s);
   if (selMod >= list.length) selMod = 0;
-  host.appendChild(el(`<div class="crumb">Mods from: <b>${s.name}</b></div>`));
+  const crumb = el(`<div class="crumb">Mods from: <b class="cw"></b>
+      <span id="modmeta" class="loadchip"><span class="dot"></span><span class="txt"></span></span></div>`);
+  $(".cw", crumb).textContent = s.name;  // server names are user-entered
+  host.appendChild(crumb);
 
   const wrap = el(`<div id="modswrap"></div>`);
   const table = el(`<div id="modtable"></div>`);
   table.appendChild(el(`<div class="thead"><div class="c-thumb"></div><div class="c-id">ID</div>
       <div class="c-status">Status</div><div class="c-name">Name</div></div>`));
   list.forEach((m, i) => {
-    // Real workshop mini-thumbnail when a preview URL is cached; grey box otherwise.
-    const thumb = (m.preview && String(m.preview).indexOf("http") === 0)
-      ? `<img class="tmb" src="${escAttr(m.preview)}">` : `<div class="box"></div>`;
+    // Real workshop mini-thumbnail when a preview image is cached; otherwise a
+    // grey box - pulsing while the Workshop lookup for this list is still out.
+    const thumb = isPreviewUrl(m.preview)
+      ? `<img class="tmb" src="${escAttr(m.preview)}">`
+      : `<div class="box ${modMetaInfo.running ? "loading" : ""}"></div>`;
     const r = el(`<div class="trow ${i === selMod ? "sel" : ""} ${m.state === "rem" ? "removedrow" : ""}">
-        <div class="c-thumb">${thumb}</div><div class="c-id">${m.id}</div>
+        <div class="c-thumb">${thumb}</div><div class="c-id"></div>
         <div class="c-status"><span class="pill ${m.state}">${stateLabel[m.state]}</span></div>
-        <div class="c-name">${m.name}</div></div>`);
+        <div class="c-name"></div></div>`);
+    // textContent, not interpolation: the mod NAME is scraped from the Workshop
+    // page and the ID comes from a hand-editable ActiveMods= line - neither may
+    // reach innerHTML (same rule as the log/steamcmd output elsewhere).
+    $(".c-id", r).textContent = m.id;
+    $(".c-name", r).textContent = m.name;
     const im = $(".tmb", r);
     if (im) im.addEventListener("error", () => { im.parentNode.innerHTML = '<div class="box"></div>'; });
     r.addEventListener("click", () => { selMod = i; render(); });
@@ -1267,18 +1614,31 @@ function renderMods(host) {
   if (list.length) {
     const m = list[selMod];
     const pv = el(`<div id="preview">
-        <div class="img">no preview yet</div>
-        <h3>${m.name}</h3><div class="id">ID ${m.id}</div>
+        <div class="img ${modMetaInfo.running ? "loading" : ""}">${
+          modMetaInfo.running ? "loading preview..." : "no preview yet"}</div>
+        <h3></h3><div class="id"></div>
         <div class="kv"><div class="k">Status</div><span class="pill ${m.state}">${stateLabel[m.state]}</span></div>
-        <div class="kv"><div class="k">Size</div><span>${m.size}</span></div>
-        <div class="kv"><div class="k">Updated</div><span>${m.updated}</span></div>
+        <div class="kv"><div class="k">Size</div><span class="v-size"></span></div>
+        <div class="kv kv-rel"><div class="k">Released</div><span class="v-rel"></span></div>
+        <div class="kv kv-upd"><div class="k">Updated</div><span class="v-upd"></span></div>
+        <div class="kv kv-inst"><div class="k">Installed</div><span class="v-inst"></span></div>
         <div style="margin-top:10px"><a class="ws">View on Workshop</a></div></div>`);
+    // Same rule as above - every one of these comes from the Workshop or the ini.
+    $("h3", pv).textContent = m.name;
+    $(".id", pv).textContent = "ID " + m.id;
+    $(".v-size", pv).textContent = m.size;
+    $(".v-rel", pv).textContent = m.released || "-";
+    $(".v-upd", pv).textContent = m.updated;
+    $(".v-inst", pv).textContent = m.installedAt || "-";
+    attachTip($(".kv-rel", pv), "First published on the Steam Workshop (the Workshop's \"Posted\" date).");
+    attachTip($(".kv-upd", pv), "Last update the author pushed to the Workshop.");
+    attachTip($(".kv-inst", pv), "When AMU last installed or updated this mod on THIS server (local time).");
     $(".ws", pv).addEventListener("click", () => openExternal(URL_WS + m.id));
     if (stateTip[m.state]) attachTip($(".pill", pv), stateTip[m.state]);
     // Workshop preview image: only for http(s) URLs; on a load error swap back
     // to the "no preview" text (Sciter fires an error event on img like browsers).
     const purl = String(m.preview || "");
-    if (purl.indexOf("http://") === 0 || purl.indexOf("https://") === 0) {
+    if (isPreviewUrl(purl)) {
       const imgBox = $(".img", pv);
       const img = el(`<img src="${escAttr(purl)}" style="width:100%;height:130px;border-radius:8px">`);
       img.addEventListener("error", () => { imgBox.innerHTML = ""; imgBox.textContent = "no preview yet"; });
@@ -1297,7 +1657,9 @@ function renderMods(host) {
       <input|text class="am-id" placeholder="Workshop mod id">
       <button class="primary am-ok">Add</button>
       <button class="am-cancel">Cancel</button>
+      <a class="am-browse">Browse the Workshop</a>
       <span class="am-note"></span></div>`);
+  $(".am-browse", addrow).addEventListener("click", () => openExternal(URL_WS_BROWSE));
   const idInp = $(".am-id", addrow);
   const note = $(".am-note", addrow);
   idInp.addEventListener("input", () => {
@@ -1335,44 +1697,89 @@ function renderMods(host) {
   });
   host.appendChild(addrow);
 
-  const act = el(`<div class="actions">
-      <button class="primary b-updall">Update all Mods</button>
-      <button class="b-updsel">Update selected</button>
-      <button class="b-addmod">Add Mod</button>
-      <button class="b-remmod">Remove Mod</button></div>`);
-  $(".b-updall", act).addEventListener("click", () => startUpdateRun(s.id, ""));
-  $(".b-updsel", act).addEventListener("click", () => {
-    const m = list[selMod];
-    if (m) startUpdateRun(s.id, m.id);
-  });
+  // The button set follows the list, not a fixed layout:
+  //  - "Install missing (N)"  only while some mod is not (fully) on disk; runs
+  //                           the pipeline for exactly those ids.
+  //  - "Check for updates"    always (when there are mods): steamcmd validates
+  //                           every active mod - outdated ones get updated,
+  //                           current ones are reported "Up to date" and left
+  //                           alone. It is the ONLY way to learn that an
+  //                           installed mod is outdated, which is why it stays
+  //                           even when everything is installed (it becomes
+  //                           the primary button then).
+  //  - per selection          "Install" for a missing mod, "Reinstall" (force)
+  //                           for an installed one - "Update" would be wrong
+  //                           for something already current.
+  //  - "Remove Mod"           danger-styled, only with a selection.
+  const missing = list.filter(m => m.state === "no" || m.state === "inc");
+  const sel = list[selMod];
+  const selMissing = !!sel && (sel.state === "no" || sel.state === "inc");
+  let btns = "";
+  if (list.length) {
+    if (missing.length)
+      btns += `<button class="primary b-instmissing">Install missing (${missing.length})</button>`;
+    btns += `<button class="${missing.length ? "" : "primary"} b-checkall">Check for updates</button>`;
+    if (sel) btns += `<button class="b-selact">${selMissing ? "Install" : "Reinstall"}</button>`;
+  }
+  btns += `<button class="b-addmod">Add Mod</button>`;
+  if (sel) btns += `<button class="danger b-remmod">Remove Mod</button>`;
+  const act = el(`<div class="actions">${btns}</div>`);
+
+  const bim = $(".b-instmissing", act);
+  if (bim) {
+    attachTip(bim, "Download and install only the mods that are not (fully) on disk yet.");
+    bim.addEventListener("click", () => startUpdateRun(s.id, missing.map(m => m.id).join(","), false));
+  }
+  const bca = $(".b-checkall", act);
+  if (bca) {
+    attachTip(bca, "Let steamcmd validate every active mod: outdated ones are updated, missing ones installed, current ones left untouched.");
+    bca.addEventListener("click", () => startUpdateRun(s.id, "", false));
+  }
+  const bsa = $(".b-selact", act);
+  if (bsa) {
+    attachTip(bsa, selMissing ? "Download and install the selected mod."
+                              : "Re-download and reinstall the selected mod even though it is already up to date.");
+    bsa.addEventListener("click", () => {
+      const m = list[selMod];
+      if (m) startUpdateRun(s.id, m.id, m.state === "ok");
+    });
+  }
   $(".b-addmod", act).addEventListener("click", () => {
     addrow.style.display = (addrow.style.display === "none") ? "block" : "none";
     note.textContent = "";
   });
-  // Remove with the same two-click confirm pattern as the server Delete button.
-  const rb = $(".b-remmod", act);
-  rb.addEventListener("click", () => {
+  // Remove asks through the confirm modal and spells out what happens.
+  const rb = $(".b-remmod", act);  // absent when nothing is selected
+  if (rb) rb.addEventListener("click", () => {
     const m = list[selMod];
     if (!m) return;
-    if (!rb._armed) {
-      rb._armed = true;
-      rb.textContent = "Really remove?";
-      setTimeout(() => { if (rb._armed) { rb._armed = false; rb.textContent = "Remove Mod"; } }, 3000);
-      return;
-    }
-    rb._armed = false;
-    if (NATIVE) {
-      try { NATIVE.removeMod(s.id, m.id); } catch (e) { console.log("removeMod failed: " + e); }
-      s.mods = null;
-      servers = loadServers();
-    } else {
-      const i = list.indexOf(m);
-      if (i >= 0) list.splice(i, 1);
-    }
-    selMod = 0;
-    render();
+    askConfirm({
+      title: "Remove mod from " + s.name + "?",
+      text: m.name + " (ID " + m.id + ") will be:\n" +
+            "- taken out of ActiveMods= in GameUserSettings.ini\n" +
+            "- deleted from ShooterGame\\Content\\Mods on disk\n\n" +
+            "The Workshop item is not affected - you can add it again any time.",
+      okLabel: "Remove mod",
+      danger: true,
+      onOk: () => {
+        if (NATIVE) {
+          try { NATIVE.removeMod(s.id, m.id); } catch (e) { console.log("removeMod failed: " + e); }
+          s.mods = null;
+          servers = loadServers();
+        } else {
+          const i = list.indexOf(m);
+          if (i >= 0) list.splice(i, 1);
+        }
+        selMod = 0;
+        render();
+      },
+    });
   });
   host.appendChild(act);
+
+  // Last: fill in whatever Workshop metadata is still missing (names, dates,
+  // preview images) in the background and repaint when it lands.
+  startModMetaRefresh(s.id);
 }
 
 /* ---------- shared form widgets (server screen + add-server screen) ---------- */
@@ -1438,6 +1845,16 @@ function wireMapCombo(combo, curGame) {
       comboOpen = null;
     }
   });
+  // Clicking the FIELD opens the full list too, not just the caret. The caret
+  // glyph has proven unreliable to render in Sciter, so the combobox must be
+  // fully usable without it - the whole control behaves like a dropdown.
+  input.addEventListener("click", () => {
+    if (list.style.display === "none") {
+      fill("");
+      list.style.display = "block";
+      comboOpen = list;
+    }
+  });
   input.addEventListener("input", () => {
     // Typing filters the list live (and opens it on first keystroke).
     fill(String(input.value || ""));
@@ -1445,6 +1862,20 @@ function wireMapCombo(combo, curGame) {
     comboOpen = list;
   });
   return { input, list, fill };
+}
+
+// "Browse..." next to a Path field: opens the native folder picker seeded with
+// the current value. Cancelling returns "" and leaves the field untouched. In
+// the plain-browser preview there is no picker, so the button just hints.
+function wireBrowse(btn, input) {
+  if (!btn || !input) return;
+  btn.addEventListener("click", () => {
+    if (!NATIVE) { btn.textContent = "(desktop only)"; return; }
+    try {
+      const p = NATIVE.pickFolder("Select the ARK install root", inpVal(input));
+      if (p) input.value = p;
+    } catch (e) { console.log("pickFolder failed: " + e); }
+  });
 }
 
 // Input value with a browser-preview fallback: unknown <input|*> elements in a
@@ -1470,11 +1901,12 @@ function renderServer(host) {
   const form = el(`<div class="form">
     <div class="colw">
       <div class="field"><label>Name</label><input|text class="f-name" value="${escAttr(s.name)}"></div>
-      <div class="field"><label>Path</label><input|text class="f-path" value="${escAttr(s.path)}"></div>
+      <div class="field"><label>Path</label>
+        <div class="pathrow"><input|text class="f-path" value="${escAttr(s.path)}"><button class="f-browse">Browse...</button></div></div>
       <div class="field"><label>Map</label>
         <div class="combo">
           <input|text class="f-map" value="${escAttr(s.map)}">
-          <div class="caret"><div class="b1"></div><div class="b2"></div><div class="b3"></div><div class="b4"></div></div>
+          <div class="caret">&#9660;</div>
           <div class="combolist" style="display:none"></div>
         </div></div>
     </div>
@@ -1496,6 +1928,7 @@ function renderServer(host) {
   let mc;
   const curGame = wireGamePills(gp, () => { if (mc.list.style.display !== "none") mc.fill(""); });
   mc = wireMapCombo($(".combo", form), curGame);
+  wireBrowse($(".f-browse", form), $(".f-path", form));
   host.appendChild(form);
 
   const blk = el(`<div class="block">
@@ -1520,16 +1953,13 @@ function renderServer(host) {
   host.appendChild(blk);
 
   const act = el(`<div class="actions">
-      <button class="primary b-start">Start</button>
-      <button class="b-stop">Stop</button>
-      <button class="b-restart">Restart</button>
+      <span id="lifecycle"></span>
       <div class="sep"></div>
       <button class="b-save">Save Server</button>
       <button class="danger b-del">Delete</button></div>`);
 
-  $(".b-start", act).addEventListener("click", () => doServerAction(s, cur, "start"));
-  $(".b-stop", act).addEventListener("click", () => doServerAction(s, cur, "stop"));
-  $(".b-restart", act).addEventListener("click", () => doServerAction(s, cur, "restart"));
+  // Start/Stop/Restart are painted from the live state - see paintLifecycle.
+  paintLifecycle(true, $("#lifecycle", act));
 
   $(".b-save", act).addEventListener("click", () => {
     // Read current values from the DOM at click time.
@@ -1562,27 +1992,29 @@ function renderServer(host) {
     render();
   });
 
-  // Delete with an inline confirm step (no native popups): first click arms
-  // the button as "Really delete?" for 3s, the second click deletes.
+  // Delete asks through the confirm modal (deleteServerById drops the AMU
+  // entry only - the ARK installation on disk is never touched).
   const db = $(".b-del", act);
   db.addEventListener("click", () => {
-    if (!db._armed) {
-      db._armed = true;
-      db.textContent = "Really delete?";
-      setTimeout(() => { if (db._armed) { db._armed = false; db.textContent = "Delete"; } }, 3000);
-      return;
-    }
-    db._armed = false;
-    if (NATIVE) {
-      try { NATIVE.deleteServerById(s.id); } catch (e) { console.log("deleteServerById failed: " + e); }
-      servers = loadServers();
-    } else {
-      const i = servers.indexOf(s);
-      if (i >= 0) servers.splice(i, 1);
-    }
-    cur = 0;
-    screen = "mods";
-    render();
+    askConfirm({
+      title: "Delete server \"" + s.name + "\" from AMU?",
+      text: "This removes the entry from AMU only: its launch options, mod cache links and log lines.\n\n" +
+            "The ARK installation in\n" + s.path + "\nstays on disk untouched, and a running server is not stopped.",
+      okLabel: "Delete server",
+      danger: true,
+      onOk: () => {
+        if (NATIVE) {
+          try { NATIVE.deleteServerById(s.id); } catch (e) { console.log("deleteServerById failed: " + e); }
+          servers = loadServers();
+        } else {
+          const i = servers.indexOf(s);
+          if (i >= 0) servers.splice(i, 1);
+        }
+        cur = 0;
+        screen = "server";  // the per-server default tab is Server, never Mods
+        render();
+      },
+    });
   });
   host.appendChild(act);
 }
@@ -1592,28 +2024,30 @@ function renderServer(host) {
 function renderAddServer(host) {
   host.appendChild(el(`<div class="crumb">Add Server</div>`));
 
-  const form = el(`<div class="form">
+  const form = el(`<div class="form onecol">
     <div class="colw">
-      <div class="field"><label>Name</label><input|text class="a-name" value=""></div>
-      <div class="field"><label>Path</label><input|text class="a-path" value="">
+      <div class="widerow">
+        <div class="field fgrow"><label>Name</label><input|text class="a-name" value=""></div>
+        <div class="field fright"><label>Game</label>
+          <div class="pills gamesel">
+            <span class="active">ASE</span>
+            <span>ASA</span></div></div>
+      </div>
+      <div class="field"><label>Path</label>
+        <div class="pathrow"><input|text class="a-path" value=""><button class="a-browse">Browse...</button></div>
         <div class="fhint">ARK install root - the folder that contains ShooterGame\\Binaries\\Win64\\...</div></div>
       <div class="field"><label>Map</label>
         <div class="combo">
           <input|text class="a-map" value="">
-          <div class="caret"><div class="b1"></div><div class="b2"></div><div class="b3"></div><div class="b4"></div></div>
+          <div class="caret">&#9660;</div>
           <div class="combolist" style="display:none"></div>
         </div></div>
-    </div>
-    <div class="colw">
-      <div class="field"><label>Game</label>
-        <div class="pills gamesel">
-          <span class="active">ASE</span>
-          <span>ASA</span></div></div>
     </div></div>`);
   const gp = $(".gamesel", form);
   let mc;
   const curGame = wireGamePills(gp, () => { if (mc.list.style.display !== "none") mc.fill(""); });
   mc = wireMapCombo($(".combo", form), curGame);
+  wireBrowse($(".a-browse", form), $(".a-path", form));
   host.appendChild(form);
 
   const note = el(`<div class="formnote"></div>`);
@@ -1933,6 +2367,8 @@ const cfgState = {
   maps: null,              // { gus, game } "section|key" (lowercased) -> [values...]
   search: "",
   cat: "",
+  onlySet: false,          // "Only set" filter: hide everything ARK is defaulting
+  collapsed: {},           // category -> folded? (survives refreshes and server switches)
 };
 const cfgPendingAll = {};  // serverId -> { edits: {pendKey->{file,section,key,value}},
                            //               dels:  {pendKey->{file,section,key}},
@@ -2105,16 +2541,40 @@ function onCfgNumInput(inp, st, isFloat) {
   updCfgRow(inp, st);
 }
 
+// The greyed text in an unset field is the ARK DEFAULT, shown as a placeholder
+// - and Sciter hides a placeholder on focus, so clicking a field looked like it
+// wiped the value. Instead we drop the default in as real, editable text (you
+// usually want to tweak a default URL, not retype it); leaving the field again
+// without changing anything clears it, so an untouched field stays "not set"
+// and is never written to the ini.
+function wireDefaultPrefill(inp, defStr) {
+  if (!defStr) return;
+  const val = () => String(inp.value !== undefined && inp.value !== null ? inp.value : "");
+  let prefilled = false;
+  inp.addEventListener("focus", () => {
+    if (val() !== "") return;
+    prefilled = true;
+    inp.value = defStr;  // programmatic: fires no "input", so nothing is staged
+  });
+  inp.addEventListener("blur", () => {
+    if (prefilled && val() === defStr) inp.value = "";
+    prefilled = false;
+  });
+}
+
 function buildCfgRow(st) {
   const pk = pendKey(st);
   const p = cfgPend();
   const disp = cfgDisplay(st);
   const inDump = !!dumpValues(st);
   const complex = st.type === "array" || st.complex;
-  const isset = complex
-    ? (p.fams[pk] ? p.fams[pk].lines.length > 0 : cfgFamilyLines(st).length > 0)
-    : !!(p.edits[pk] || (inDump && !p.dels[pk]));
+  const isset = cfgIsSet(st);
   const defStr = (st.default === undefined || st.default === null) ? "" : String(st.default);
+  // Clicking an unset field prefills the default, or - when ARK has no default
+  // to show (CustomLiveTuningUrl, most URLs) - the example, so there is always
+  // something to edit instead of retype. Safe either way: an untouched prefill
+  // is cleared again on blur and never staged (wireDefaultPrefill).
+  const exStr = (st.example === undefined || st.example === null) ? "" : String(st.example);
 
   const row = el(`<div class="cfgrow ${isset ? "isset" : ""}">
       <div class="cleft">
@@ -2134,6 +2594,7 @@ function buildCfgRow(st) {
         <div class="cfgraw"></div>
         <div class="cfgedit" style="display:none">
           <textarea class="cfgta"></textarea>
+          ${st.example ? `<div class="cfgexample">Example: <span class="ex"></span><a class="ex-use">insert</a></div>` : ""}
           <div class="cfgtabtns">
             <button class="primary ta-apply">Apply</button>
             <button class="ta-cancel">Cancel</button></div>
@@ -2141,7 +2602,9 @@ function buildCfgRow(st) {
         <a class="cfgeditlink">Edit</a></div>`);
     const raw = $(".cfgraw", box), edit = $(".cfgedit", box),
           link = $(".cfgeditlink", box), ta = $(".cfgta", box);
-    if (st.example) ta.setAttribute("placeholder", st.example);
+    // No placeholder on purpose: Sciter hides it the moment the field gets
+    // focus, which read as "my text just vanished". The example lives in the
+    // .cfgexample line below instead, where it stays put and can be inserted.
     // Staged family lines win over the ini dump, both here and in the prefill.
     const stagedFam = () => cfgPend().fams[pendKey(st)];
     const paintRaw = () => {
@@ -2158,6 +2621,28 @@ function buildCfgRow(st) {
       ta.classList.toggle("invalid", bad);
     };
     ta.addEventListener("input", validate);
+    // "insert" drops the example in as real, editable text - appended on its
+    // own line when the editor already has content.
+    //
+    // The example line only EXISTS when there is an example (see the template
+    // above) and is never display-toggled. The first version rendered it with
+    // style="display:none" and switched it to "block" here - a visible child
+    // inside the still-hidden .cfgedit block. Sciter 6.0.4.10 then crashed
+    // (access violation in sciter.dll, always at offset 0x126f7a) about ten
+    // seconds after every Config render, in roughly one run out of three;
+    // pinned down with a screen-cycling harness in the loose dev ui copy.
+    const exBox = $(".cfgexample", box);
+    if (exBox) {
+      $(".ex", exBox).textContent = st.example;  // examples carry quotes and '<' - never innerHTML
+      $(".ex-use", exBox).addEventListener("click", () => {
+        const cur = taVal();
+        ta.value = cur.trim() === "" ? String(st.example)
+                                     : cur.replace(/\s+$/, "") + "\n" + st.example;
+        validate();
+        // no ta.focus() here on purpose: it was the only focus() call in the
+        // app and landed in the same build as a crash inside sciter.dll
+      });
+    }
     const showEdit = (on) => {
       edit.style.display = on ? "block" : "none";
       raw.style.display = on ? "none" : "block";
@@ -2207,6 +2692,7 @@ function buildCfgRow(st) {
     const inp = el(`<input|text class="cfgnum" value="${disp.set ? escAttr(disp.val) : ""}"
         placeholder="${escAttr(defStr)}">`);
     inp.addEventListener("input", () => onCfgNumInput(inp, st, st.type === "float"));
+    wireDefaultPrefill(inp, defStr || exStr);
     val.appendChild(inp);
   } else {  // string
     const inp = el(`<input|text class="cfgstr" value="${disp.set ? escAttr(disp.val) : ""}"
@@ -2217,6 +2703,7 @@ function buildCfgRow(st) {
       inp.classList.remove("invalid");
       updCfgRow(inp, st);
     });
+    wireDefaultPrefill(inp, defStr || exStr);
     val.appendChild(inp);
   }
 
@@ -2230,14 +2717,67 @@ function buildCfgRow(st) {
   return row;
 }
 
+// Deliberate category order: everything about RUNNING the server first, then
+// the gameplay knobs. The schema's own order interleaved the two (Rates,
+// Harvesting, Creatures, then General, then more gameplay, then Network), so
+// scrolling the list felt random. Categories not listed here keep their
+// first-appearance position at the end - a new schema category still shows up.
+const CFG_CAT_ORDER = [
+  // server administration
+  "General",
+  "Network & Performance",
+  "Messages",
+  "Cross-ARK/Transfers",
+  "Advanced",
+  // gameplay
+  "Rates",
+  "Harvesting",
+  "Engrams & Items",
+  "Structures",
+  "Decay",
+  "Players",
+  "Tribes",
+  "Creatures",
+  "Breeding",
+  "PvP",
+  "PvE",
+  "Time & Weather",
+];
+
+// Sort the categories present in `names` into CFG_CAT_ORDER, appending unknown
+// ones in the order they were given.
+function cfgOrderCats(names) {
+  const out = CFG_CAT_ORDER.filter(c => names.indexOf(c) >= 0);
+  for (const c of names) if (out.indexOf(c) < 0) out.push(c);
+  return out;
+}
+
+// Inside one category, keep the two ini files apart instead of alternating row
+// by row. GameUserSettings first - it is the file people actually edit - then
+// Game.ini, then anything else.
+function cfgFileRank(st) {
+  return st.file === "GameUserSettings" ? 0 : (st.file === "Game" ? 1 : 2);
+}
+
+// Is a setting present in the ini right now, or staged to be? Drives the row's
+// green "isset" edge and the "Only set" filter.
+function cfgIsSet(st) {
+  const pk = pendKey(st), p = cfgPend();
+  if (st.type === "array" || st.complex)
+    return p.fams[pk] ? p.fams[pk].lines.length > 0 : cfgFamilyLines(st).length > 0;
+  return !!(p.edits[pk] || (!!dumpValues(st) && !p.dels[pk]));
+}
+
 // CommandLine settings live in the launch section, not here; the rest is filtered
-// by the server's game, the search text (key or description) and the category.
+// by the server's game, the search text (key or description), the category and
+// the "Only set" toggle.
 function cfgFiltered(game) {
   const q = cfgState.search.toLowerCase();
   return SCHEMA.settings.filter(st =>
     st.file !== "CommandLine" &&
     st.games.indexOf(game) >= 0 &&
     (!cfgState.cat || st.category === cfgState.cat) &&
+    (!cfgState.onlySet || cfgIsSet(st)) &&
     (!q || st.key.toLowerCase().indexOf(q) >= 0 ||
       String(st.description || "").toLowerCase().indexOf(q) >= 0));
 }
@@ -2246,16 +2786,37 @@ function renderCfgList(listHost, countEl, game) {
   const items = cfgFiltered(game);
   countEl.textContent = items.length + " setting" + (items.length === 1 ? "" : "s");
   listHost.innerHTML = "";
-  // bucket by category, first-appearance order (schema interleaves categories)
+  // bucket by category, then lay the buckets out in CFG_CAT_ORDER
   const order = [], buckets = {};
   for (const st of items) {
     if (!buckets[st.category]) { buckets[st.category] = []; order.push(st.category); }
     buckets[st.category].push(st);
   }
-  for (const cat of order) {
-    listHost.appendChild(el(`<div class="cfgcat">${cat.toUpperCase()}</div>`));
-    const group = el(`<div class="cfggroup"></div>`);
-    for (const st of buckets[cat]) group.appendChild(buildCfgRow(st));
+  for (const cat of cfgOrderCats(order)) {
+    const folded = !!cfgState.collapsed[cat];
+    const head = el(`<div class="cfgcat ${folded ? "folded" : ""}"><span class="caret">${
+        folded ? "&#9656;" : "&#9662;"}</span>${cat.toUpperCase()} <span class="n">${buckets[cat].length}</span></div>`);
+    const group = el(`<div class="cfggroup ${folded ? "folded" : ""}"></div>`);
+    // Click folds/unfolds in place - no list rebuild - and records it in cfgState.
+    head.addEventListener("click", () => {
+      const now = !cfgState.collapsed[cat];
+      cfgState.collapsed[cat] = now;
+      head.classList.toggle("folded", now);
+      group.classList.toggle("folded", now);
+      $(".caret", head).innerHTML = now ? "&#9656;" : "&#9662;";
+    });
+    listHost.appendChild(head);
+    // Group the category's rows by ini file + section. The index tiebreak keeps
+    // the schema's own key order inside a section (related keys stay adjacent),
+    // without relying on the engine's sort being stable.
+    const rows = buckets[cat].map((st, i) => ({ st: st, i: i }));
+    rows.sort((a, b) => {
+      const fr = cfgFileRank(a.st) - cfgFileRank(b.st);
+      if (fr) return fr;
+      if (a.st.section !== b.st.section) return a.st.section < b.st.section ? -1 : 1;
+      return a.i - b.i;
+    });
+    for (const r of rows) group.appendChild(buildCfgRow(r.st));
     listHost.appendChild(group);
   }
   if (!items.length)
@@ -2355,19 +2916,21 @@ function renderConfig(host) {
   ensureCfgDumps(s);
 
   host.appendChild(el(`<div class="crumb">Config: <b>${s.name}</b>
-      <span style="color:#9AA6B4">- Aenderungen werden beim naechsten Serverstart wirksam.</span></div>`));
+      <span style="color:#9AA6B4">- changes take effect on the next server start.</span></div>`));
 
   const cats = [];
   for (const st of SCHEMA.settings)
     if (st.file !== "CommandLine" && cats.indexOf(st.category) < 0) cats.push(st.category);
   let copts = `<option value="" ${cfgState.cat === "" ? "selected" : ""}>All categories</option>`;
-  for (const c of cats)
+  for (const c of cfgOrderCats(cats))  // same order as the list itself
     copts += `<option value="${escAttr(c)}" ${cfgState.cat === c ? "selected" : ""}>${c}</option>`;
 
   const bar = el(`<div class="cfgbar">
       <input|text class="cfg-search" value="${escAttr(cfgState.search)}" placeholder="Search settings...">
       <select class="cfgsel cfg-cat">${copts}</select>
+      <div class="toggle cfg-onlyset ${cfgState.onlySet ? "on" : ""}"><div class="box"></div><span>Only set</span></div>
       <div class="grow"></div>
+      <a class="cfgfold cfg-collapse">collapse all</a><span class="cfgfoldsep">&middot;</span><a class="cfgfold cfg-expand">expand all</a>
       <div class="cfgcount"></div></div>`);
   host.appendChild(bar);
   const list = el(`<div id="cfglist"></div>`);
@@ -2395,6 +2958,20 @@ function renderConfig(host) {
   });
   const cs = $(".cfg-cat", bar);
   cs.addEventListener("change", () => { cfgState.cat = String(cs.value || ""); cfgRefresh(); });
+  const os = $(".cfg-onlyset", bar);
+  os.addEventListener("click", () => {
+    cfgState.onlySet = !cfgState.onlySet;
+    os.classList.toggle("on", cfgState.onlySet);
+    cfgRefresh();
+  });
+  // Fold state is per category and lives in cfgState.collapsed, so it survives
+  // filter changes, refreshes and switching servers.
+  const foldAll = (folded) => {
+    for (const c of cats) cfgState.collapsed[c] = folded;
+    cfgRefresh();
+  };
+  $(".cfg-collapse", bar).addEventListener("click", () => foldAll(true));
+  $(".cfg-expand", bar).addEventListener("click", () => foldAll(false));
 
   cfgRefresh();
   paintCfgFooter();
@@ -2436,9 +3013,11 @@ function renderLogs(host) {
 }
 
 function render() {
+  hideTip();  // the element that opened a tip is about to be replaced
   renderSidebar();
   if (screen !== "update") stopUpdPolling();  // leaving the update screen kills its 1s poll
   if (screen !== "settings") stopAupdPolling();  // same for the About update-check poll
+  if (screen !== "mods") stopModMetaPoll();      // and for the Workshop backfill
   const host = $("#content");
   host.innerHTML = "";
   // Startup notice: the banner tops every screen until installed or dismissed.

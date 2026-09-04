@@ -1,6 +1,7 @@
 #include "amucore/updatecheck.h"
 
 #include <cstddef>
+#include <limits>
 
 namespace amucore {
 
@@ -33,16 +34,36 @@ bool normalizeSha256(const std::string& in, std::string* out) {
   return true;
 }
 
-// Strictly numeric decimal -> int64. Returns false on empty/non-digit input.
+// Strictly numeric decimal -> int64. Returns false on empty/non-digit input and
+// on anything too large for int64 - the manifest is downloaded, so an absurd
+// digit run must not overflow the accumulator (signed overflow is UB).
 bool parseSize(const std::string& s, int64_t* out) {
   if (s.empty()) return false;
+  constexpr int64_t kMax = (std::numeric_limits<int64_t>::max)();
   int64_t v = 0;
   for (char c : s) {
     if (c < '0' || c > '9') return false;
-    v = v * 10 + (c - '0');
+    const int d = c - '0';
+    if (v > (kMax - d) / 10) return false;
+    v = v * 10 + d;
   }
   *out = v;
   return true;
+}
+
+// Numeric prefix of the dotted version segment starting at *i; advances *i past
+// the digits. Saturates at kMaxSegment rather than overflowing int64 on an absurd
+// digit run - a saturated segment still compares as "very large", so ordering
+// stays sensible for anything remotely version-shaped.
+int64_t segmentValue(const std::string& s, size_t* i) {
+  constexpr int64_t kMaxSegment = 999999999999999999LL;  // 18 digits
+  int64_t v = 0;
+  while (*i < s.size() && s[*i] >= '0' && s[*i] <= '9') {
+    const int d = s[*i] - '0';
+    v = (v <= (kMaxSegment - d) / 10) ? v * 10 + d : kMaxSegment;
+    ++*i;
+  }
+  return v;
 }
 
 }  // namespace
@@ -89,16 +110,8 @@ int compareVersions(const std::string& a, const std::string& b) {
   while (ia < a.size() || ib < b.size()) {
     // Numeric prefix of the current dotted segment; missing segments are 0 and
     // any non-numeric suffix ("-dev", "rc1") is ignored.
-    int64_t va = 0;
-    while (ia < a.size() && a[ia] >= '0' && a[ia] <= '9') {
-      va = va * 10 + (a[ia] - '0');
-      ++ia;
-    }
-    int64_t vb = 0;
-    while (ib < b.size() && b[ib] >= '0' && b[ib] <= '9') {
-      vb = vb * 10 + (b[ib] - '0');
-      ++ib;
-    }
+    const int64_t va = segmentValue(a, &ia);
+    const int64_t vb = segmentValue(b, &ib);
     if (va != vb) return va < vb ? -1 : 1;
 
     // Skip the rest of the segment up to and including the next dot.
@@ -108,6 +121,44 @@ int compareVersions(const std::string& a, const std::string& b) {
     if (ib < b.size()) ++ib;
   }
   return 0;
+}
+
+HttpsUrl splitHttpsUrl(const std::string& url) {
+  HttpsUrl out;
+  static const char kScheme[] = "https://";
+  const size_t kSchemeLen = sizeof(kScheme) - 1;
+  if (url.size() <= kSchemeLen) return out;
+  for (size_t i = 0; i < kSchemeLen; ++i) {
+    char c = url[i];
+    if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    if (c != kScheme[i]) return out;  // http://, ftp://, javascript:, ...
+  }
+
+  size_t hostEnd = url.find_first_of("/?#", kSchemeLen);
+  if (hostEnd == kNpos) hostEnd = url.size();
+  const std::string host = url.substr(kSchemeLen, hostEnd - kSchemeLen);
+  if (host.empty()) return out;
+  // Host names only: '@' (userinfo) and ':' (port) would make the request go
+  // somewhere other than <host>:443, which is all the helpers can do.
+  for (unsigned char c : host) {
+    const bool allowed = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                         (c >= '0' && c <= '9') || c == '.' || c == '-' ||
+                         c == '_';
+    if (!allowed) return out;
+  }
+
+  std::string path = (hostEnd < url.size()) ? url.substr(hostEnd) : std::string();
+  const size_t hash = path.find('#');  // fragment is client-side only
+  if (hash != kNpos) path.resize(hash);
+  if (path.empty() || path[0] != '/') path.insert(path.begin(), '/');
+  // Spaces, CR/LF and other control bytes have no business in a request line.
+  for (unsigned char c : path)
+    if (c <= 0x20 || c == 0x7F) return out;
+
+  out.ok = true;
+  out.host = host;
+  out.path = path;
+  return out;
 }
 
 }  // namespace amucore

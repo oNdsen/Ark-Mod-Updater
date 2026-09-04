@@ -7,6 +7,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -29,6 +30,12 @@
 //     running before the update (AutoIt always ran the start script).
 //   - the once-a-day cache-clear date is persisted in a marker file next to
 //     steamcmd (the Db API cannot UPDATE the "-1" settings row msg1 yet).
+//   - a mod is unpacked into a staging folder and swapped in only when every
+//     file made it; a failed install keeps the previous one AND the stale mods
+//     row, so the next run retries instead of reporting "up to date".
+//   - the steamcmd child gets stdin at EOF plus an idle watchdog, and is
+//     terminated when it goes silent or when the app is shutting down: no step
+//     of a run may block ~Orchestrator's join indefinitely.
 
 namespace amucore {
 
@@ -192,11 +199,28 @@ struct InstallHooks {
   std::function<void(const char*, const std::string&)> log;       // (type, msg), serverId bound
 };
 
+// Outcome of one mod install. Ok is the ONLY result that may stamp the mods row
+// as up to date (see updateServer) - anything else must keep the stale row so
+// the next run retries.
+enum class InstallResult { Ok, NoFiles, Failed };
+
+// Suffix of the staging folder the files are unpacked into. It sits next to the
+// live install (same parent -> same volume), so swapping it in is a rename.
+constexpr const char* kStagingSuffix = ".amunew";
+
 // Port of __ModDecomp (amu.au3 line 2445): install one downloaded mod from the
-// steamcmd workshop content dir into <destRoot>\<modId> (+ <modId>.mod). Returns
-// false when the source has no unpackable files (guard at amu.au3 2470-2477).
-bool installModFiles(const InstallHooks& h, const std::string& contentRootUtf8,
-                     const std::string& destRootUtf8, const std::string& modId) {
+// steamcmd workshop content dir into <destRoot>\<modId> (+ <modId>.mod).
+//
+// DEVIATION from the AutoIt original (and from the first C++ port): the files go
+// into a staging folder <destRoot>\<modId>.amunew and are swapped over the live
+// install only when EVERY file made it. The original deleted the destination
+// FIRST and merely logged per-file failures while still reporting success, so a
+// failed unpack left a broken/empty mod folder that the caller then stamped as
+// up to date - it was never repaired and the server was restarted onto it.
+// The staging costs one mod's worth of extra disk space while unpacking; in
+// exchange a failed install leaves the previous one completely untouched.
+InstallResult installModFiles(const InstallHooks& h, const std::string& contentRootUtf8,
+                              const std::string& destRootUtf8, const std::string& modId) {
   std::error_code ec;
   const std::string srcModUtf8 = contentRootUtf8 + "\\" + modId;
   fs::path srcDir = widePath(srcModUtf8);
@@ -204,28 +228,14 @@ bool installModFiles(const InstallHooks& h, const std::string& contentRootUtf8,
 
   const std::string destDirUtf8 = destRootUtf8 + "\\" + modId;
   const std::string destModUtf8 = destRootUtf8 + "\\" + modId + ".mod";
+  const std::string stageDirUtf8 = destDirUtf8 + kStagingSuffix;
   const fs::path destDir = widePath(destDirUtf8);
   const fs::path destMod = widePath(destModUtf8);
-
-  if (fs::exists(destDir, ec)) {
-    fs::remove_all(destDir, ec);
-    h.log("debug", "Mod Folder Deleted: " + destDirUtf8);
-  }
-  if (fs::exists(destMod, ec)) {
-    fs::remove(destMod, ec);
-    h.log("debug", "Mod File Deleted: " + destModUtf8);
-  }
-  fs::create_directories(destDir, ec);
-
-  // _CreateModFile FIRST (before the file loop), reading modmeta.info + mod.info
-  // from the mod root (NOT the WindowsNoEditor subdir - mirrors the AutoIt paths).
-  const auto modmeta = readFileBytes(widePath(srcModUtf8 + "\\modmeta.info"));
-  const auto modinfo = readFileBytes(widePath(srcModUtf8 + "\\mod.info"));
-  const uint64_t idNum = std::strtoull(modId.c_str(), nullptr, 10);
-  writeFileBytes(destMod, buildModFile(idNum, parseModInfo(modinfo), modmeta));
-  h.log("debug", "ModFile created: " + destModUtf8);
+  const fs::path stageDir = widePath(stageDirUtf8);
 
   // Collect all files recursively, excluding the *.uncompressed_size sidecars.
+  // Done BEFORE anything is written: an incomplete download must not cost the
+  // user the install he already has.
   std::vector<fs::path> rels;
   fs::recursive_directory_iterator it(srcDir, fs::directory_options::skip_permission_denied, ec);
   fs::recursive_directory_iterator end;
@@ -241,18 +251,34 @@ bool installModFiles(const InstallHooks& h, const std::string& contentRootUtf8,
     h.log("normal", "Mod " + modId + ": no unpackable files found in " +
                         fromWide(srcDir.wstring()) + " - skipped (incomplete download?).");
     h.line("Mod " + modId + ": no files to unpack - skipped.");
-    return false;
+    return InstallResult::NoFiles;
   }
+
+  // Fresh staging folder (a leftover from an interrupted run is discarded).
+  fs::remove_all(stageDir, ec);
+  ec.clear();
+  fs::create_directories(stageDir, ec);
+  if (ec) {
+    h.log("normal", "Mod " + modId + ": could not create the staging folder " + stageDirUtf8 +
+                        " (" + ec.message() + ") - install aborted.");
+    h.line("Mod " + modId + ": install failed (staging folder) - keeping the previous install.");
+    return InstallResult::Failed;
+  }
+  auto dropStaging = [&stageDir] {
+    std::error_code rec;
+    fs::remove_all(stageDir, rec);
+  };
 
   for (const fs::path& rel : rels) {
     const fs::path src = srcDir / rel;
     const std::string relName = fromWide(rel.wstring());
+    std::string failure;  // non-empty -> this file could not be installed
     if (endsWithNoCase(relName, ".z")) {
       // Unpack, stripping the .z extension from the destination name; up to 3
-      // attempts like the AutoIt retry loop, then continue with the next file.
+      // attempts like the AutoIt retry loop.
       std::wstring relW = rel.wstring();
       relW.resize(relW.size() - 2);  // drop ".z"
-      const fs::path dest = destDir / relW;
+      const fs::path dest = stageDir / relW;
       std::error_code dec;
       fs::create_directories(dest.parent_path(), dec);
       int zerr = 0;
@@ -263,20 +289,76 @@ bool installModFiles(const InstallHooks& h, const std::string& contentRootUtf8,
         if (zerr == 0) ok = writeFileBytes(dest, out);
       }
       if (!ok)
-        h.log("normal", "Mod " + modId + ": failed to unpack " + relName +
-                            " after 3 attempts (error " + std::to_string(zerr) + ").");
+        failure = "failed to unpack " + relName + " after 3 attempts (" +
+                  unpackFailureReason(zerr) + ")";
     } else {
-      const fs::path dest = destDir / rel;
+      const fs::path dest = stageDir / rel;
       std::error_code dec;
       fs::create_directories(dest.parent_path(), dec);
       fs::copy_file(src, dest, fs::copy_options::overwrite_existing, dec);
-      if (dec)
-        h.log("normal", "Mod " + modId + ": failed to copy " + relName + " (" +
-                            dec.message() + ").");
+      if (dec) failure = "failed to copy " + relName + " (" + dec.message() + ")";
+    }
+    if (!failure.empty()) {
+      // Fail fast: the staging folder is thrown away anyway, and the usual cause
+      // (full disk, unreadable download) would fail every remaining file too.
+      h.log("normal", "Mod " + modId + ": " + failure +
+                          " - install aborted, the previous install was left in place.");
+      h.line("Mod " + modId + ": " + failure + " - keeping the previous install.");
+      dropStaging();
+      return InstallResult::Failed;
     }
   }
+
+  // Everything unpacked. Build the .mod descriptor from modmeta.info + mod.info
+  // in the mod ROOT (NOT the WindowsNoEditor subdir - mirrors the AutoIt paths),
+  // then swap the staging folder in.
+  const auto modmeta = readFileBytes(widePath(srcModUtf8 + "\\modmeta.info"));
+  const auto modinfo = readFileBytes(widePath(srcModUtf8 + "\\mod.info"));
+  const uint64_t idNum = std::strtoull(modId.c_str(), nullptr, 10);
+  const std::vector<uint8_t> modFileBytes =
+      buildModFile(idNum, parseModInfo(modinfo), modmeta);
+
+  if (fs::exists(destDir, ec)) {
+    std::error_code dre;
+    fs::remove_all(destDir, dre);
+    std::error_code eec;
+    if (dre || fs::exists(destDir, eec)) {
+      // The old folder is only PARTIALLY gone here, so the install may well be
+      // broken - reporting failure keeps the mods row stale and the next run
+      // (or a Force Update) retries it.
+      h.log("normal", "Mod " + modId + ": could not delete the old mod folder " + destDirUtf8 +
+                          " (" + dre.message() + ") - install aborted, the next run retries it.");
+      h.line("Mod " + modId + ": install failed (could not replace the mod folder).");
+      dropStaging();
+      return InstallResult::Failed;
+    }
+    h.log("debug", "Mod Folder Deleted: " + destDirUtf8);
+  }
+  std::error_code ren;
+  fs::rename(stageDir, destDir, ren);
+  if (ren) {
+    h.log("normal", "Mod " + modId + ": could not move the unpacked files to " + destDirUtf8 +
+                        " (" + ren.message() + ") - install aborted.");
+    h.line("Mod " + modId + ": install failed (could not replace the mod folder).");
+    dropStaging();
+    return InstallResult::Failed;
+  }
+
+  if (fs::exists(destMod, ec)) {
+    fs::remove(destMod, ec);
+    h.log("debug", "Mod File Deleted: " + destModUtf8);
+  }
+  if (!writeFileBytes(destMod, modFileBytes)) {
+    // Without the descriptor ARK does not load the mod - that is a failed
+    // install, not a cosmetic problem.
+    h.log("normal", "Mod " + modId + ": could not write " + destModUtf8 +
+                        " - ARK would not load the mod, install reported as failed.");
+    h.line("Mod " + modId + ": install failed (.mod descriptor).");
+    return InstallResult::Failed;
+  }
+  h.log("debug", "ModFile created: " + destModUtf8);
   h.log("debug", "ModFolder created and Files unpacked: " + destDirUtf8);
-  return true;
+  return InstallResult::Ok;
 }
 
 std::string gusIniPath(const std::string& serverPath) {
@@ -308,6 +390,16 @@ bool needsReinstall(int64_t installedDirSize, int64_t cachedUsize,
   return installedDirSize != unpackedSourceSize || timestampsDiffer;
 }
 
+bool steamcmdTimedOut(uint64_t lastOutputTickMs, uint64_t nowTickMs, uint64_t idleTimeoutMs) {
+  if (nowTickMs <= lastOutputTickMs) return false;  // no underflow on a clock oddity
+  return (nowTickMs - lastOutputTickMs) >= idleTimeoutMs;
+}
+
+std::string unpackFailureReason(int zerr) {
+  if (zerr != 0) return "unpack error " + std::to_string(zerr);
+  return "could not write the unpacked file";
+}
+
 // --- the orchestrator ---------------------------------------------------------
 
 Orchestrator::Orchestrator(Db& db, Supervisor& sup, OrchestratorConfig cfg, LogSink log)
@@ -316,11 +408,16 @@ Orchestrator::Orchestrator(Db& db, Supervisor& sup, OrchestratorConfig cfg, LogS
 }
 
 Orchestrator::~Orchestrator() {
-  skip_.store(true);  // shorten a countdown that is in flight
+  // abort_ is the hard cancel every wait/poll of the run checks (countdowns, the
+  // steamcmd stdout pump, the per-server/per-mod loops), so the join below cannot
+  // hang for minutes. skip_ additionally shortens a countdown already in flight -
+  // it is consumed by ONE wait, which is why it alone is not enough.
+  abort_.store(true);
+  skip_.store(true);
   if (worker_.joinable()) worker_.join();
 }
 
-bool Orchestrator::start(int64_t serverId, const std::string& onlyModId) {
+bool Orchestrator::start(int64_t serverId, const std::string& onlyModIds, bool force) {
   bool expected = false;
   if (!running_.compare_exchange_strong(expected, true)) return false;
   if (worker_.joinable()) worker_.join();  // reap the previous (finished) run
@@ -331,7 +428,8 @@ bool Orchestrator::start(int64_t serverId, const std::string& onlyModId) {
     st_.phase = "collect";
   }
   skip_.store(false);
-  worker_ = std::thread(&Orchestrator::run, this, serverId, onlyModId);
+  abort_.store(false);
+  worker_ = std::thread(&Orchestrator::run, this, serverId, onlyModIds, force);
   return true;
 }
 
@@ -370,14 +468,16 @@ void Orchestrator::setPhase(const char* phase) {
 }
 
 // Worker entry - the _DownloadAndInstallMods port.
-void Orchestrator::run(int64_t serverId, std::string onlyModId) {
+void Orchestrator::run(int64_t serverId, std::string onlyModIds, bool force) {
+  // Same comma-list grammar as ActiveMods= (trimmed, empties dropped).
+  const std::vector<std::string> only = parseActiveMods(onlyModIds);
   auto log = [this](int64_t sid, const char* type, const std::string& msg) {
     if (logSink_) logSink_(sid, type, msg);
   };
 
   // The whole run body sits in a lambda so early returns still fall through to
   // the running_ reset below.
-  [&] {
+  auto body = [&] {
     setPhase("collect");
 
     // Friendly precondition FIRST: without SteamCMD there is nothing to run.
@@ -430,8 +530,8 @@ void Orchestrator::run(int64_t serverId, std::string onlyModId) {
         if (e == t) return;
       modIds.push_back(t);
     };
-    if (!onlyModId.empty()) {
-      addUnique(onlyModId);
+    if (!only.empty()) {
+      for (const std::string& id : only) addUnique(id);
     } else {
       for (const Server& t : targets)
         for (const std::string& id : readActiveMods(gusIniPath(t.path))) addUnique(id);
@@ -474,12 +574,33 @@ void Orchestrator::run(int64_t serverId, std::string onlyModId) {
       return;
     }
     // Overwrite the (possibly credential-bearing) script before deleting it.
-    auto scrubAndDeleteScript = [&scriptPath] {
+    // Both steps can fail while steamcmd still holds the file open, so the result
+    // is reported: with a non-anonymous login this file holds the SteamCMD user,
+    // password and Steam Guard code in PLAINTEXT. The message never repeats the
+    // content - only the path.
+    const bool scriptHasCreds = (loginLine != "login anonymous");
+    auto scrubAndDeleteScript = [&]() -> bool {
       std::string filler;
       for (int i = 0; i < 40; ++i) filler += std::string(64, '-') + "\r\n";
-      writeTextFile(scriptPath, filler);
+      const bool overwritten = writeTextFile(scriptPath, filler);
       std::error_code ec;
       fs::remove(scriptPath, ec);
+      std::error_code eec;
+      const bool gone = !fs::exists(scriptPath, eec);
+      if (overwritten && gone) return true;
+      const std::string path = fromWide(scriptPath.wstring());
+      // Only a FAILED overwrite can leave credentials behind - once the file is
+      // filled with dashes, a leftover temp file is harmless.
+      const std::string what =
+          !overwritten
+              ? "Warning: could not overwrite the temporary SteamCMD script " + path +
+                    (scriptHasCreds ? " - it may still hold your SteamCMD login on disk."
+                                    : " (anonymous login - it holds no credentials).")
+              : "Warning: could not delete the temporary SteamCMD script " + path +
+                    " - its content was overwritten, so no credentials remain in it.";
+      line(what);
+      log(0, "normal", what);
+      return false;
     };
 
     // Once-a-day Steam cache clear (amu.au3 1554-1568). The last-clear date lives
@@ -543,9 +664,15 @@ void Orchestrator::run(int64_t serverId, std::string onlyModId) {
                                         CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
     CloseHandle(outWr);
     CloseHandle(inRd);
+    // Close the stdin WRITE end right away: a +runscript run never reads stdin,
+    // and the child's stdin must be at EOF. Keeping this handle open (as the
+    // first port did for the whole run) means any unexpected console read -
+    // a Steam Guard question @NoPromptForPassword does not cover, a "press any
+    // key" - blocks steamcmd forever, and with it the read loop below, the worker
+    // thread and the joining destructor: AMU could then never exit.
+    CloseHandle(inWr);
     if (!created) {
       CloseHandle(outRd);
-      CloseHandle(inWr);
       line("Error: could not start SteamCMD.");
       log(0, "normal", "Error: could not start SteamCMD (" + exeUtf8 + ").");
       scrubAndDeleteScript();
@@ -591,10 +718,46 @@ void Orchestrator::run(int64_t serverId, std::string onlyModId) {
       }
     };
 
+    // Stdout pump with a watchdog. ReadFile on an anonymous pipe has no timeout,
+    // so the loop peeks first and only reads when bytes are pending; that keeps
+    // three exit conditions available that a blocking read does not have:
+    //   - the child is gone and the pipe is drained (a grandchild that inherited
+    //     the write end - steamcmd spawns helpers - can no longer keep us stuck),
+    //   - abort_ (AMU is shutting down),
+    //   - kSteamCmdIdleTimeoutMs without a single byte of output (wedged child).
+    // The last two kill the child; leaving it running would keep the credential
+    // -bearing runscript locked and block the scrub below.
+    constexpr DWORD kPumpPollMs = 100;
     std::string lastChunk;
     char buf[4096];
     DWORD n = 0;
-    while (ReadFile(outRd, buf, sizeof(buf), &n, nullptr) && n > 0) {
+    uint64_t lastOutputTick = GetTickCount64();
+    bool stalled = false;
+    bool cancelled = false;
+    for (;;) {
+      if (abort_.load()) {
+        cancelled = true;
+        break;
+      }
+      DWORD avail = 0;
+      if (!PeekNamedPipe(outRd, nullptr, 0, nullptr, &avail, nullptr)) break;  // pipe broken
+      if (avail == 0) {
+        if (WaitForSingleObject(pi.hProcess, 0) == WAIT_OBJECT_0) {
+          // Child exited: nothing can be written any more, so one more peek
+          // tells us whether output written just before the exit is still queued.
+          DWORD left = 0;
+          if (!PeekNamedPipe(outRd, nullptr, 0, nullptr, &left, nullptr) || left == 0) break;
+        } else {
+          if (steamcmdTimedOut(lastOutputTick, GetTickCount64())) {
+            stalled = true;
+            break;
+          }
+          Sleep(kPumpPollMs);
+          continue;
+        }
+      }
+      if (!ReadFile(outRd, buf, sizeof(buf), &n, nullptr) || n == 0) break;
+      lastOutputTick = GetTickCount64();
       const std::string chunk(buf, n);
       // Dedupe identical consecutive chunks; escalate error lines (amu.au3 1601-1615).
       if (chunk != lastChunk) {
@@ -614,39 +777,102 @@ void Orchestrator::run(int64_t serverId, std::string onlyModId) {
     }
     for (const SteamCmdEvent& ev : parser.flush()) handleEvent(ev);
 
-    WaitForSingleObject(pi.hProcess, 30000);
+    if (stalled) {
+      const std::string msg =
+          "SteamCMD produced no output for " +
+          std::to_string(kSteamCmdIdleTimeoutMs / 60000) +
+          " minutes - it looks stuck (waiting for a console input?). Terminating it.";
+      line(msg);
+      log(0, "normal", msg);
+    }
+    // Terminate the child when we gave up on it, and also when it outlived the
+    // exit wait: an abandoned steamcmd keeps the runscript open, which makes the
+    // credential scrub below fail silently.
+    if (stalled || cancelled) TerminateProcess(pi.hProcess, 1);
+    if (WaitForSingleObject(pi.hProcess, kSteamCmdExitWaitMs) != WAIT_OBJECT_0) {
+      log(0, "normal", "SteamCMD did not exit after its output ended - terminating it.");
+      TerminateProcess(pi.hProcess, 1);
+      WaitForSingleObject(pi.hProcess, kSteamCmdExitWaitMs);
+    }
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
     CloseHandle(outRd);
-    CloseHandle(inWr);
 
     Sleep(1000);  // AutoIt settle delay before touching the script file
-    scrubAndDeleteScript();
+    if (!scrubAndDeleteScript()) {
+      // Whatever held the file open should be gone by now (the child is dead) -
+      // one retry is enough, and the lambda logs if it fails again.
+      Sleep(1000);
+      scrubAndDeleteScript();
+    }
+
+    if (cancelled) {
+      log(0, "normal", "Update run cancelled - AMU is shutting down.");
+      setPhase("idle");
+      return;
+    }
 
     // --- per-server install --------------------------------------------------
     if (downloaded.empty()) {
       line("No Updates found.");
-      setPhase("done");
+      setPhase(stalled ? "error" : "done");
       return;
     }
     setPhase("install");
+    // A terminated steamcmd is a failed run even when the items it did finish
+    // install cleanly - the user must see that not everything was downloaded.
+    bool anyFailed = stalled;
     for (const Server& t : targets) {
-      updateServer(t, downloaded, onlyModId);
+      if (!updateServer(t, downloaded, only, force)) anyFailed = true;
       line("Finished Server ID " + std::to_string(t.id));
+      if (abort_.load()) {
+        log(0, "normal", "Update run cancelled - AMU is shutting down.");
+        setPhase("idle");
+        return;
+      }
+    }
+    if (anyFailed) {
+      line("Finished Updating Process - WITH ERRORS, see the log.");
+      log(0, "normal", "Finished Update Process with errors - some mods were not installed.");
+      setPhase("error");
+      return;
     }
     line("Finished Updating Process.");
     log(0, "debug", "Finished Update Process.");
     setPhase("done");
-  }();
+  };
+
+  // Nothing may escape the thread entry: an uncaught exception (bad_alloc, a
+  // length_error from a corrupt archive, a filesystem error, std::stoll...) would
+  // call std::terminate and take the whole app down mid-update - with the game
+  // server already stopped. Report it, park the run in the "error" phase and let
+  // the UI recover. The reporting itself must not throw out of the handler.
+  auto reportCrash = [this, &log](const char* what) {
+    try {
+      line(std::string("Update aborted - internal error: ") + what);
+      log(0, "normal", std::string("Update aborted - internal error: ") + what);
+      setPhase("error");
+    } catch (...) {
+      // Out of memory while reporting out of memory - there is nothing left to do.
+    }
+  };
+  try {
+    body();
+  } catch (const std::exception& ex) {
+    reportCrash(ex.what());
+  } catch (...) {
+    reportCrash("unknown exception");
+  }
 
   running_.store(false);
 }
 
 // The _Go4Update port: decide + countdown/stop + install + DB update + restart
-// for one server.
-void Orchestrator::updateServer(const Server& srv,
+// for one server. Returns false when at least one mod could not be installed (or
+// the run threw) - the caller ends the run in the "error" phase.
+bool Orchestrator::updateServer(const Server& srv,
                                 const std::vector<std::pair<std::string, int64_t>>& downloaded,
-                                const std::string& onlyModId) {
+                                const std::vector<std::string>& onlyModIds, bool force) {
   auto log = [this, &srv](const char* type, const std::string& msg) {
     if (logSink_) logSink_(srv.id, type, msg);
   };
@@ -675,13 +901,22 @@ void Orchestrator::updateServer(const Server& srv,
     log("debug", "Force Update Option for Server " + idStr + " found.");
     line("Force Update Option Set!");
   }
+  // Run-level force (the UI's "Reinstall") only overrides the needs-install
+  // decision below; the per-server column additionally skips the RCON warning.
+  const bool forceInstall = srv.force == 1 || force;
+  if (force) line("Reinstall requested - up-to-date mods are reinstalled as well.");
 
   // Candidates: downloaded mods that are in this server's ActiveMods (the force
   // flag skips the needs-install decision below, not this membership filter).
   const std::vector<std::string> activeMods = readActiveMods(gus);
   std::vector<std::pair<std::string, int64_t>> candidates;
   for (const auto& d : downloaded) {
-    if (!onlyModId.empty() && d.first != onlyModId) continue;
+    if (!onlyModIds.empty()) {
+      bool listed = false;
+      for (const std::string& o : onlyModIds)
+        if (o == d.first) { listed = true; break; }
+      if (!listed) continue;
+    }
     for (const std::string& a : activeMods)
       if (trimWs(a) == d.first) {
         candidates.push_back(d);
@@ -690,7 +925,7 @@ void Orchestrator::updateServer(const Server& srv,
   }
   if (candidates.empty()) {
     line("No Updates for Server " + idStr);
-    return;
+    return true;
   }
 
   std::unordered_map<std::string, Mod> modRows;
@@ -700,15 +935,24 @@ void Orchestrator::updateServer(const Server& srv,
       readTextFile(widePath(cfg_.libDir + "\\steamcmd\\steamapps\\workshop\\appworkshop_346110.acf"));
   const std::string destRoot = srv.path + "\\ShooterGame\\Content\\Mods";
 
-  // Skip-aware wait that ticks countdownSecs once per second.
+  // Skip-aware wait that ticks countdownSecs once per second. The second is slept
+  // in short slices so a Skip press - and the destructor's abort_ - take effect
+  // right away instead of after a full tick. skip_ keeps its user-facing
+  // semantics: it is CONSUMED by this wait (a later countdown runs in full),
+  // while abort_ is sticky and ends every wait of the run.
   auto waitSecs = [this](int secs) {
+    constexpr int kSliceMs = 100;
     for (int remaining = secs; remaining > 0; --remaining) {
+      if (abort_.load()) break;
       if (skip_.exchange(false)) break;
       {
         std::lock_guard<std::mutex> lk(mu_);
         st_.countdownSecs = remaining;
       }
-      Sleep(1000);
+      for (int slept = 0; slept < 1000; slept += kSliceMs) {
+        Sleep(kSliceMs);
+        if (abort_.load() || skip_.load()) break;
+      }
     }
     std::lock_guard<std::mutex> lk(mu_);
     st_.countdownSecs = -1;
@@ -724,151 +968,203 @@ void Orchestrator::updateServer(const Server& srv,
 
   bool shutdownDone = false;  // ONCE per server (the AutoIt $shutdown_procedure)
   bool wasRunning = false;
+  bool ok = true;             // false once a mod could not be installed
 
-  for (const auto& [modId, bytes] : candidates) {
-    const std::string srcModDir = contentRoot + "\\" + modId;
-    std::error_code ec;
-    if (!fs::exists(widePath(srcModDir), ec)) {
-      // Guard at amu.au3 1986: downloaded content missing (removed/private mod).
-      line("Mod " + modId + " was not downloaded (it may not exist or be private) - skipping.");
-      log("normal", "Mod " + modId + " was not downloaded (may not exist/private) - skipped.");
-      modStatus(modId, "Not downloaded");
-      continue;
-    }
-
-    const AcfModInfo acf = parseAcfForMod(acfText, modId);
-    // Normalize "" -> "0" so a missing ACF entry equals the 0 default the AutoIt
-    // numeric comparison produced.
-    const std::string acfTime = acf.timeUpdated.empty() ? "0" : acf.timeUpdated;
-
-    const bool hasRow = modRows.find(modId) != modRows.end();
-    const Mod cached = hasRow ? modRows[modId] : Mod{};
-    const std::string installedDir = destRoot + "\\" + modId;
-    const bool wasInstalled = fs::exists(widePath(installedDir), ec);
-
-    bool doInstall = true;
-    if (wasInstalled) {
-      const int64_t oldSize = dirSizeRecursive(installedDir);
-      const int64_t unpacked = unpackedModSize(srcModDir);
-      doInstall = needsReinstall(oldSize, cached.usize, std::to_string(cached.timeupdated),
-                                 acfTime, unpacked);
-    }
-    if (wasInstalled && !(doInstall || srv.force == 1)) {
-      modStatus(modId, "Up to date");
-      continue;
-    }
-    if (!(doInstall || srv.force == 1)) continue;
-
-    // Workshop name/preview (network). On failure keep the cached values so a
-    // Steam hiccup does not wipe the stored mod name (mirrors the neterror path).
-    std::string modName = cached.name;
-    std::string modPreview = cached.preview;
-    {
-      const WorkshopModInfo wi = getModInfo(std::strtoull(modId.c_str(), nullptr, 10));
-      if (!wi.name.empty()) modName = wi.name;
-      if (!wi.previewUrl.empty()) modPreview = wi.previewUrl;
-    }
-    if (modName.empty()) modName = "**Could not determine Mod Name**";
-
-    // --- once per server: countdown broadcasts + graceful stop + backup -----
-    if (!shutdownDone) {
-      const uint32_t pid = detectPid(srv.path);
-      if (pid != 0) {
-        line("Found running ARK Server (ID: " + idStr + ") with PID " + std::to_string(pid));
-        log("debug", "Found running ARK Server (ID: " + idStr + ") with PID " + std::to_string(pid));
-      } else {
-        line("No running Server Instance found (ID: " + idStr + "). Starting Update Process...");
-        log("debug", "No running Server Instance found (ID: " + idStr + "). Starting Update Process...");
+  // The per-mod loop is exception-guarded so the restart tail below ALWAYS runs:
+  // a throw in here (bad_alloc, a filesystem error, a corrupt archive) would
+  // otherwise unwind past the restart and leave the game server stopped - the
+  // update was the only reason it went down.
+  try {
+    for (const auto& [modId, bytes] : candidates) {
+      if (abort_.load()) break;  // AMU is shutting down - take on no new mod
+      const std::string srcModDir = contentRoot + "\\" + modId;
+      std::error_code ec;
+      if (!fs::exists(widePath(srcModDir), ec)) {
+        // Guard at amu.au3 1986: downloaded content missing (removed/private mod).
+        line("Mod " + modId + " was not downloaded (it may not exist or be private) - skipping.");
+        log("normal", "Mod " + modId + " was not downloaded (may not exist/private) - skipped.");
+        modStatus(modId, "Not downloaded");
+        continue;
       }
 
-      if (pid != 0) {
-        if (srv.force == 0) {
-          if (rconEnabled) {
-            line("Sending RCON MSG1: " + msg1);
-            line("Time left for MSG2: " + std::to_string(srv.restarttime - 1) + " Minutes");
-            log("debug", "Sending RCON MSG1 to " + rconIp + ": " + msg1);
-            broadcast(msg1, "msg1");
-            setPhase("countdown");
-            waitSecs(srv.restarttime * 60 - 60);
-            line("Sending RCON MSG2: " + msg2);
-            log("debug", "Sending RCON MSG2 to " + rconIp + ": " + msg2);
-            line("Time left for MSG3: 1 Minute");
-            broadcast(msg2, "msg2");
-            waitSecs(60);
-            setPhase("install");
+      const AcfModInfo acf = parseAcfForMod(acfText, modId);
+      // Normalize "" -> "0" so a missing ACF entry equals the 0 default the AutoIt
+      // numeric comparison produced.
+      const std::string acfTime = acf.timeUpdated.empty() ? "0" : acf.timeUpdated;
+
+      const bool hasRow = modRows.find(modId) != modRows.end();
+      const Mod cached = hasRow ? modRows[modId] : Mod{};
+      const std::string installedDir = destRoot + "\\" + modId;
+      const bool wasInstalled = fs::exists(widePath(installedDir), ec);
+
+      bool doInstall = true;
+      if (wasInstalled) {
+        const int64_t oldSize = dirSizeRecursive(installedDir);
+        const int64_t unpacked = unpackedModSize(srcModDir);
+        doInstall = needsReinstall(oldSize, cached.usize, std::to_string(cached.timeupdated),
+                                   acfTime, unpacked);
+      }
+      if (wasInstalled && !(doInstall || forceInstall)) {
+        modStatus(modId, "Up to date");
+        continue;
+      }
+      if (!(doInstall || forceInstall)) continue;
+
+      // Workshop name/preview (network). On failure keep the cached values so a
+      // Steam hiccup does not wipe the stored mod name (mirrors the neterror path).
+      std::string modName = cached.name;
+      std::string modPreview = cached.preview;
+      {
+        const WorkshopModInfo wi = getModInfo(std::strtoull(modId.c_str(), nullptr, 10));
+        if (!wi.name.empty()) modName = wi.name;
+        if (!wi.previewUrl.empty()) modPreview = wi.previewUrl;
+      }
+      if (modName.empty()) modName = "**Could not determine Mod Name**";
+
+      // --- once per server: countdown broadcasts + graceful stop + backup -----
+      if (!shutdownDone) {
+        const uint32_t pid = detectPid(srv.path);
+        if (pid != 0) {
+          line("Found running ARK Server (ID: " + idStr + ") with PID " + std::to_string(pid));
+          log("debug", "Found running ARK Server (ID: " + idStr + ") with PID " + std::to_string(pid));
+        } else {
+          line("No running Server Instance found (ID: " + idStr + "). Starting Update Process...");
+          log("debug", "No running Server Instance found (ID: " + idStr + "). Starting Update Process...");
+        }
+
+        if (pid != 0) {
+          if (srv.force == 0) {
+            if (rconEnabled) {
+              line("Sending RCON MSG1: " + msg1);
+              line("Time left for MSG2: " + std::to_string(srv.restarttime - 1) + " Minutes");
+              log("debug", "Sending RCON MSG1 to " + rconIp + ": " + msg1);
+              broadcast(msg1, "msg1");
+              setPhase("countdown");
+              waitSecs(srv.restarttime * 60 - 60);
+              line("Sending RCON MSG2: " + msg2);
+              log("debug", "Sending RCON MSG2 to " + rconIp + ": " + msg2);
+              line("Time left for MSG3: 1 Minute");
+              broadcast(msg2, "msg2");
+              waitSecs(60);
+              setPhase("install");
+            }
+          } else {
+            line("Force Var found, skipping RCON Commands");
           }
-        } else {
-          line("Force Var found, skipping RCON Commands");
+          // A cancel during the countdown must not go on to stop the server:
+          // stopForUpdate blocks for minutes (save confirm + graceful exit +
+          // kill) and cannot be interrupted, and the destructor's join would
+          // have to sit through all of it. Nothing has been touched yet here,
+          // so leaving now is clean - the server keeps running.
+          if (abort_.load()) break;
+          if (rconEnabled) {
+            line("Sending RCON MSG3: " + msg3);
+            log("debug", "Sending RCON MSG3 to " + rconIp + ": " + msg3);
+            broadcast(msg3, "msg3");
+            Sleep(500);
+          }
+          // saveworld + fresh-save confirm + DoExit + terminate fallback. Only go
+          // through the Supervisor when it actually sees the server up - calling
+          // stopForUpdate on a tracked-but-stopped entry would leave its updating
+          // flag set with no startAfterUpdate ever clearing it.
+          const ServerStatus ss = sup_.status(srv.id);
+          if (ss.running || ss.state == "starting") {
+            line("Shutdown Server Instance " + idStr + " (PID: " + std::to_string(pid) + ")");
+            log("debug", "Shutdown Server Instance " + idStr + " (PID: " + std::to_string(pid) + ")");
+            const StopStatus st = sup_.stopForUpdate(srv.id, StopOptions{}, &wasRunning);
+            // NoHandle means the stop could NOT end the process (typically AMU
+            // unelevated vs an elevated server, or a kill that timed out). The
+            // files must not be swapped underneath a live server - it has the
+            // .pak files mapped, so the install would half-fail and the running
+            // world would be left on a mix of old and new mods. Abort this
+            // server; the restart tail below restores desired=Running.
+            if (st == StopStatus::NoHandle) {
+              const std::string msg =
+                  "Server " + idStr + " could not be stopped (PID " + std::to_string(pid) +
+                  " is still running) - skipping the mod swap so nothing is installed under a "
+                  "live server. Stop it manually, or run AMU with the same rights as the server.";
+              line(msg);
+              log("normal", msg);
+              ok = false;
+              break;
+            }
+          } else {
+            log("normal", "Server " + idStr + " is running (PID " + std::to_string(pid) +
+                              ") but not managed by the Supervisor - could not stop it for "
+                              "the update.");
+          }
         }
-        if (rconEnabled) {
-          line("Sending RCON MSG3: " + msg3);
-          log("debug", "Sending RCON MSG3 to " + rconIp + ": " + msg3);
-          broadcast(msg3, "msg3");
-          Sleep(500);
+
+        // .ark backup (runs whether or not the server was running - AutoIt 2149).
+        if (srv.backup == 1) {
+          const std::string savedArks = srv.path + "\\ShooterGame\\Saved\\SavedArks\\";
+          const fs::path arkFile = widePath(savedArks + srv.map + ".ark");
+          if (fs::exists(arkFile, ec)) {
+            const std::string bakName = srv.map + "_ModBak_" + backupStamp() + ".ark";
+            fs::copy_file(arkFile, widePath(savedArks + bakName),
+                          fs::copy_options::overwrite_existing, ec);
+            line("Map Backup Successfull: " + bakName);
+            log("debug", "Map Backup Successfull: " + bakName);
+          } else {
+            line("Error: Could not backup the Map. It seems that " + srv.map + " doesnt exists!");
+            log("normal", "Error: Could not backup the Map. It seems that " + srv.map + " doesnt exists!");
+          }
         }
-        // saveworld + fresh-save confirm + DoExit + terminate fallback. Only go
-        // through the Supervisor when it actually sees the server up - calling
-        // stopForUpdate on a tracked-but-stopped entry would leave its updating
-        // flag set with no startAfterUpdate ever clearing it.
-        const ServerStatus ss = sup_.status(srv.id);
-        if (ss.running || ss.state == "starting") {
-          line("Shutdown Server Instance " + idStr + " (PID: " + std::to_string(pid) + ")");
-          log("debug", "Shutdown Server Instance " + idStr + " (PID: " + std::to_string(pid) + ")");
-          sup_.stopForUpdate(srv.id, StopOptions{}, &wasRunning);
-        } else {
-          log("normal", "Server " + idStr + " is running (PID " + std::to_string(pid) +
-                            ") but not managed by the Supervisor - could not stop it for "
-                            "the update.");
-        }
+        shutdownDone = true;
       }
 
-      // .ark backup (runs whether or not the server was running - AutoIt 2149).
-      if (srv.backup == 1) {
-        const std::string savedArks = srv.path + "\\ShooterGame\\Saved\\SavedArks\\";
-        const fs::path arkFile = widePath(savedArks + srv.map + ".ark");
-        if (fs::exists(arkFile, ec)) {
-          const std::string bakName = srv.map + "_ModBak_" + backupStamp() + ".ark";
-          fs::copy_file(arkFile, widePath(savedArks + bakName),
-                        fs::copy_options::overwrite_existing, ec);
-          line("Map Backup Successfull: " + bakName);
-          log("debug", "Map Backup Successfull: " + bakName);
-        } else {
-          line("Error: Could not backup the Map. It seems that " + srv.map + " doesnt exists!");
-          log("normal", "Error: Could not backup the Map. It seems that " + srv.map + " doesnt exists!");
-        }
+      // --- install this mod ----------------------------------------------------
+      line("Updating ModID " + modId + "...");
+      modStatus(modId, "Installing...");
+      InstallHooks hooks;
+      hooks.line = [this](const std::string& t) { line(t); };
+      hooks.log = [&log](const char* type, const std::string& m) { log(type, m); };
+      const InstallResult ir = installModFiles(hooks, contentRoot, destRoot, modId);
+      if (ir == InstallResult::NoFiles) {
+        modStatus(modId, "Not downloaded");
+        continue;
       }
-      shutdownDone = true;
-    }
+      if (ir == InstallResult::Failed) {
+        // Do NOT touch the mods row: stamping the fresh timeupdated/usize here
+        // would make needsReinstall report "up to date" forever and the broken
+        // install would never be repaired (the bug this branch exists for).
+        // installModFiles already logged the concrete cause.
+        ok = false;
+        modStatus(modId, "Error: install failed");
+        log("normal", "Mod " + modId + " (" + modName + ") FAILED to install on Server " + idStr +
+                          " - its cached state was left stale so the next run retries it.");
+        continue;
+      }
+      log("normal", (wasInstalled ? std::string("Updated Mod ") : std::string("Installed Mod ")) +
+                        modId + " (" + modName + ") on Server " + idStr);
+      modStatus(modId, wasInstalled ? "Updated" : "Installed");
 
-    // --- install this mod ----------------------------------------------------
-    line("Updating ModID " + modId + "...");
-    modStatus(modId, "Installing...");
-    InstallHooks hooks;
-    hooks.line = [this](const std::string& t) { line(t); };
-    hooks.log = [&log](const char* type, const std::string& m) { log(type, m); };
-    if (!installModFiles(hooks, contentRoot, destRoot, modId)) {
-      modStatus(modId, "Not downloaded");
-      continue;
+      // Update the mods row (read-modify-write keeps olddate/date/manifest intact).
+      Mod m = cached;
+      m.modid = std::strtoll(modId.c_str(), nullptr, 10);
+      m.size = bytes;
+      m.usize = dirSizeRecursive(installedDir);
+      m.name = modName;
+      m.preview = modPreview;
+      m.timeupdated = std::strtoll(acfTime.c_str(), nullptr, 10);
+      db_.upsertMod(m);
+      modRows[modId] = m;
     }
-    log("normal", (wasInstalled ? std::string("Updated Mod ") : std::string("Installed Mod ")) +
-                      modId + " (" + modName + ") on Server " + idStr);
-    modStatus(modId, wasInstalled ? "Updated" : "Installed");
-
-    // Update the mods row (read-modify-write keeps olddate/date/manifest intact).
-    Mod m = cached;
-    m.modid = std::strtoll(modId.c_str(), nullptr, 10);
-    m.size = bytes;
-    m.usize = dirSizeRecursive(installedDir);
-    m.name = modName;
-    m.preview = modPreview;
-    m.timeupdated = std::strtoll(acfTime.c_str(), nullptr, 10);
-    db_.upsertMod(m);
-    modRows[modId] = m;
+  } catch (const std::exception& ex) {
+    ok = false;
+    line("Error while updating Server " + idStr + ": " + ex.what());
+    log("normal", "Internal error while updating Server " + idStr + ": " + ex.what());
+  } catch (...) {
+    ok = false;
+    line("Error while updating Server " + idStr + ": unknown exception");
+    log("normal", "Internal error while updating Server " + idStr + ": unknown exception");
   }
 
   // Restart - DEVIATION from AutoIt (which always ran the start script): only
   // restart when the server was running before the update. shutdownDone (the
   // AutoIt $needupdate at decision time) marks that an install was attempted.
+  // This runs after a failed/aborted install too: a server AMU stopped must not
+  // stay down just because one mod could not be written.
   if (shutdownDone && wasRunning) {
     sup_.startAfterUpdate(srv.id);
     line("Started Server ID: " + idStr);
@@ -879,6 +1175,7 @@ void Orchestrator::updateServer(const Server& srv,
   } else {
     line("No Updates for Server " + idStr);
   }
+  return ok;
 }
 
 }  // namespace amucore

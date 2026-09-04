@@ -1,5 +1,7 @@
 #include <doctest/doctest.h>
 
+#include <string>
+
 #include "amucore/steamcmd_parser.h"
 
 using namespace amucore;
@@ -61,4 +63,27 @@ TEST_CASE("CRLF line endings are handled") {
   auto ev = p.feed("Success. Downloaded item 8 (3 bytes)\r\n");
   REQUIRE(ev.size() == 1);
   CHECK(ev[0].modId == "8");
+}
+
+TEST_CASE("a byte count too large for int64 is reported as 0, not thrown") {
+  // This line used to reach std::stoll, which throws std::out_of_range on the
+  // steamcmd reader thread and takes the whole process down.
+  SteamCmdParser p;
+  auto ev = p.feed("Success. Downloaded item 123 (" + std::string(40, '9') + " bytes)\n");
+  REQUIRE(ev.size() == 1);
+  CHECK(ev[0].type == SteamCmdEvent::Type::DownloadSucceeded);
+  CHECK(ev[0].modId == "123");
+  CHECK(ev[0].bytes == 0);
+}
+
+TEST_CASE("byte counts right at the int64 boundary") {
+  SteamCmdParser p;
+  auto ev = p.feed("Success. Downloaded item 1 (9223372036854775807 bytes)\n");
+  REQUIRE(ev.size() == 1);
+  CHECK(ev[0].bytes == 9223372036854775807LL);
+
+  auto over = p.feed("Success. Downloaded item 2 (9223372036854775808 bytes)\n");
+  REQUIRE(over.size() == 1);
+  CHECK(over[0].modId == "2");
+  CHECK(over[0].bytes == 0);
 }

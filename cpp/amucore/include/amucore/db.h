@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -62,6 +63,7 @@ struct Mod {
   std::string preview;
   std::string olddate;
   std::string date;
+  std::string posted;  // Workshop "Posted" (first published); column added 2.0
   int64_t manifest = 0;
   int64_t timeupdated = 0;
 };
@@ -99,6 +101,24 @@ struct LaunchConfig {
   bool present = false;       // false when no row exists (all-defaults applies)
 };
 
+// Thread safety: ONE Db is shared by the Sciter UI thread, the supervisor's
+// watcher + worker threads and the orchestrator's worker thread (main_sciter.cpp
+// hands the same object to both, and the log sink fires from the background
+// threads). The SQLite amalgamation is built serialized, so a single sqlite3_*
+// call is safe on its own - but our multi-call sequences are not: an interleaved
+// INSERT from another thread moves sqlite3_last_insert_rowid, and lastError_ is
+// a plain std::string written from every error path.
+//
+// So every PUBLIC method locks mu_ for its whole duration. That makes each
+// method atomic against the other threads (INSERT + last_insert_rowid,
+// INSERT OR IGNORE + UPDATE, the three DELETEs of deleteServer, ...) and gives
+// lastError_ a single writer at a time.
+//
+// mu_ is NOT recursive, so no public method may call another public method.
+// Bodies shared between them live in private *Locked() helpers that assume the
+// lock is already held (see closeLocked(), the only such case today). Nothing
+// under the lock calls back into foreign code, so no lock-order inversion with
+// the supervisor/orchestrator locks is possible.
 class Db {
  public:
   Db() = default;
@@ -106,8 +126,12 @@ class Db {
 
   Db(const Db&) = delete;
   Db& operator=(const Db&) = delete;
-  Db(Db&& other) noexcept;
-  Db& operator=(Db&& other) noexcept;
+  // Not movable: std::mutex is not movable, and the threads above hold a Db&
+  // for the object's whole lifetime (AmuWindow::db_, Orchestrator::db_), so
+  // relocating one out from under them could never be safe. Verified that
+  // nothing in the tree moves a Db - deleting these makes it a compile error.
+  Db(Db&&) = delete;
+  Db& operator=(Db&&) = delete;
 
   // Open (or create) the database at `path`. Pass ":memory:" for an in-memory DB.
   // On a fresh DB the four tables are created; on an existing DB the missing
@@ -115,7 +139,7 @@ class Db {
   // settings row is ensured. Returns false on failure (see lastError()).
   bool open(const std::string& path);
   void close();
-  bool isOpen() const { return db_ != nullptr; }
+  bool isOpen() const;
 
   // "SELECT * FROM servers JOIN settings ON id = server_id" - every configured
   // server with its settings, ordered by servers.id.
@@ -177,15 +201,20 @@ class Db {
   bool saveGlobalSteamcmd(int anonymous, const std::string& user,
                           const std::string& pass, const std::string& guard);
 
-  const std::string& lastError() const { return lastError_; }
+  // A COPY of the last error message. Returning a reference would hand the UI
+  // thread a view into a string the background threads keep reassigning.
+  std::string lastError() const;
 
  private:
+  // All private helpers run with mu_ already held (called from a public method).
+  void closeLocked();  // close()'s body; open()/~Db() reuse it without relocking
   bool ensureSchema();
   bool tableExists(const char* table);
   bool columnExists(const char* table, const char* column);
   bool addColumnIfMissing(const char* table, const char* column, const char* type);
   bool exec(const char* sql);
 
+  mutable std::mutex mu_;  // guards db_ + lastError_; see the class comment
   sqlite3* db_ = nullptr;
   std::string lastError_;
 };

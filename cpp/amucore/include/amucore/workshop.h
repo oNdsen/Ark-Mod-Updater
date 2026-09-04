@@ -11,6 +11,8 @@ struct WorkshopModInfo {
   std::string name;        // workshopItemTitle text, or "" when unavailable
   std::string previewUrl;  // preview image URL, or "" when none was found
   std::string date;        // last-updated text (detailsStatRight), or ""
+  std::string posted;      // "Posted" text - when the item was first published, or ""
+
   bool available = false;  // false when the item was removed / private / not found
 };
 
@@ -34,9 +36,12 @@ struct AcfModInfo {
 };
 
 // PURE parser for appworkshop_346110.acf contents. Finds the block whose key line
-// contains `modId` and reads the three following value lines positionally (matching
-// the AutoIt line+2/+3/+4 + StringSplit-on-quote element [4] logic). Returns all
-// empty when the mod id is not found.
+// is EXACTLY "<modId>" (quoted) and reads the three following value lines
+// positionally (matching the AutoIt line+2/+3/+4 + StringSplit-on-quote element
+// [4] logic). Returns all empty when the mod id is not found.
+// The exact match matters: a substring search would also hit another mod's
+// 19-digit "manifest" or 10-digit "timeupdated" value that merely starts with
+// this id, and then read size/timeupdated/manifest out of the WRONG block.
 AcfModInfo parseAcfForMod(const std::string& acfText, const std::string& modId);
 
 // Fetch the Workshop page for `modId` over HTTPS via WinHTTP and run it through

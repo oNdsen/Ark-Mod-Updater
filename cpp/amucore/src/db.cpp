@@ -1,6 +1,7 @@
 #include "amucore/db.h"
 
 #include <ctime>
+#include <mutex>
 #include <utility>
 
 #include "sqlite3.h"
@@ -70,25 +71,33 @@ std::string nowLogTimestamp() {
   return std::string(buf);
 }
 
-Db::~Db() { close(); }
-
-Db::Db(Db&& other) noexcept
-    : db_(std::exchange(other.db_, nullptr)), lastError_(std::move(other.lastError_)) {}
-
-Db& Db::operator=(Db&& other) noexcept {
-  if (this != &other) {
-    close();
-    db_ = std::exchange(other.db_, nullptr);
-    lastError_ = std::move(other.lastError_);
-  }
-  return *this;
+Db::~Db() {
+  // Take the lock once so a background thread that is still finishing a call
+  // has released it before the mutex itself goes away. close() would relock.
+  std::lock_guard<std::mutex> lk(mu_);
+  closeLocked();
 }
 
 void Db::close() {
+  std::lock_guard<std::mutex> lk(mu_);
+  closeLocked();
+}
+
+void Db::closeLocked() {
   if (db_) {
     sqlite3_close(db_);
     db_ = nullptr;
   }
+}
+
+bool Db::isOpen() const {
+  std::lock_guard<std::mutex> lk(mu_);
+  return db_ != nullptr;
+}
+
+std::string Db::lastError() const {
+  std::lock_guard<std::mutex> lk(mu_);
+  return lastError_;  // by value - the caller must not alias a racing member
 }
 
 bool Db::exec(const char* sql) {
@@ -102,14 +111,15 @@ bool Db::exec(const char* sql) {
 }
 
 bool Db::open(const std::string& path) {
-  close();
+  std::lock_guard<std::mutex> lk(mu_);
+  closeLocked();  // NOT close() - mu_ is already held and is not recursive
   if (sqlite3_open(path.c_str(), &db_) != SQLITE_OK) {
     lastError_ = db_ ? sqlite3_errmsg(db_) : "sqlite3_open failed";
-    close();
+    closeLocked();
     return false;
   }
   sqlite3_busy_timeout(db_, 5000);
-  return ensureSchema();
+  return ensureSchema();  // private helper - runs under the lock we hold
 }
 
 bool Db::tableExists(const char* table) {
@@ -194,6 +204,8 @@ bool Db::ensureSchema() {
   addColumnIfMissing("mods", "date", "TEXT");
   addColumnIfMissing("mods", "manifest", "INTEGER");
   addColumnIfMissing("mods", "timeupdated", "INTEGER");
+  addColumnIfMissing("mods", "posted", "TEXT");  // AMU 2.0: Workshop "Posted" date
+
   addColumnIfMissing("settings", "steamcmd_anonymous", "INTEGER");
   addColumnIfMissing("settings", "steamcmd_user", "INTEGER");
   addColumnIfMissing("settings", "steamcmd_pass", "INTEGER");
@@ -230,6 +242,7 @@ bool Db::ensureSchema() {
 }
 
 std::vector<Server> Db::servers() {
+  std::lock_guard<std::mutex> lk(mu_);
   std::vector<Server> out;
   sqlite3_stmt* st = nullptr;
   // Explicit column list (not SELECT *) so struct mapping is order-independent
@@ -265,6 +278,7 @@ std::vector<Server> Db::servers() {
 }
 
 Settings Db::settings(int64_t serverId) {
+  std::lock_guard<std::mutex> lk(mu_);
   Settings out;
   out.serverId = serverId;
   sqlite3_stmt* st = nullptr;
@@ -298,11 +312,12 @@ Settings Db::settings(int64_t serverId) {
 }
 
 std::vector<Mod> Db::mods() {
+  std::lock_guard<std::mutex> lk(mu_);
   std::vector<Mod> out;
   sqlite3_stmt* st = nullptr;
   const char* sql =
       "SELECT modid, size, name, usize, preview, olddate, date, manifest, "
-      "timeupdated FROM mods ORDER BY modid;";
+      "timeupdated, posted FROM mods ORDER BY modid;";
   if (sqlite3_prepare_v2(db_, sql, -1, &st, nullptr) != SQLITE_OK) {
     lastError_ = sqlite3_errmsg(db_);
     return out;
@@ -318,6 +333,7 @@ std::vector<Mod> Db::mods() {
     m.date = colText(st, 6);
     m.manifest = sqlite3_column_int64(st, 7);
     m.timeupdated = sqlite3_column_int64(st, 8);
+    m.posted = colText(st, 9);
     out.push_back(std::move(m));
   }
   sqlite3_finalize(st);
@@ -325,10 +341,11 @@ std::vector<Mod> Db::mods() {
 }
 
 bool Db::upsertMod(const Mod& m) {
+  std::lock_guard<std::mutex> lk(mu_);
   sqlite3_stmt* st = nullptr;
   const char* sql =
       "INSERT OR REPLACE INTO mods(modid, size, name, usize, preview, olddate, "
-      "date, manifest, timeupdated) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?);";
+      "date, manifest, timeupdated, posted) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?);";
   if (sqlite3_prepare_v2(db_, sql, -1, &st, nullptr) != SQLITE_OK) {
     lastError_ = sqlite3_errmsg(db_);
     return false;
@@ -342,6 +359,7 @@ bool Db::upsertMod(const Mod& m) {
   bindText(st, 7, m.date);
   sqlite3_bind_int64(st, 8, m.manifest);
   sqlite3_bind_int64(st, 9, m.timeupdated);
+  bindText(st, 10, m.posted);
   const bool ok = sqlite3_step(st) == SQLITE_DONE;
   sqlite3_finalize(st);
   if (!ok) lastError_ = sqlite3_errmsg(db_);
@@ -349,6 +367,7 @@ bool Db::upsertMod(const Mod& m) {
 }
 
 int64_t Db::addLog(int64_t serverId, const std::string& type, const std::string& entry) {
+  std::lock_guard<std::mutex> lk(mu_);
   sqlite3_stmt* st = nullptr;
   const char* sql =
       "INSERT INTO logs(server_id, type, date, entry) VALUES (?, ?, ?, ?);";
@@ -366,10 +385,14 @@ int64_t Db::addLog(int64_t serverId, const std::string& type, const std::string&
     lastError_ = sqlite3_errmsg(db_);
     return -1;
   }
+  // Safe under mu_: last_insert_rowid is per CONNECTION, so it would report
+  // another thread's INSERT (into servers/settings/...) if one could slip in
+  // between the step above and this call.
   return sqlite3_last_insert_rowid(db_);
 }
 
 std::vector<LogEntry> Db::logs(int limit) {
+  std::lock_guard<std::mutex> lk(mu_);
   std::vector<LogEntry> out;
   sqlite3_stmt* st = nullptr;
   const char* sqlAll =
@@ -397,6 +420,7 @@ std::vector<LogEntry> Db::logs(int limit) {
 }
 
 bool Db::clearLogs() {
+  std::lock_guard<std::mutex> lk(mu_);
   // _ClearLog does DROP TABLE + CREATE TABLE + VACUUM; DELETE + VACUUM keeps
   // the same schema object alive (only log_id numbering continues) and cannot
   // race prepared statements against a dropped table.
@@ -406,6 +430,7 @@ bool Db::clearLogs() {
 }
 
 bool Db::deleteMod(int64_t modid) {
+  std::lock_guard<std::mutex> lk(mu_);
   sqlite3_stmt* st = nullptr;
   if (sqlite3_prepare_v2(db_, "DELETE FROM mods WHERE modid=?;", -1, &st, nullptr) !=
       SQLITE_OK) {
@@ -420,6 +445,12 @@ bool Db::deleteMod(int64_t modid) {
 }
 
 int64_t Db::upsertServer(const Server& sv) {
+  // The whole INSERT/UPDATE sequence runs under one lock: the servers INSERT and
+  // the sqlite3_last_insert_rowid that reads its id must not be separated by any
+  // other thread's INSERT (the background log sink writes to logs continuously),
+  // or the settings + launch rows below would be keyed on a logs rowid and the
+  // new server would never show up in servers() (INNER JOIN settings).
+  std::lock_guard<std::mutex> lk(mu_);
   if (sv.id > 0) {
     // UPDATE servers + UPDATE settings (amu.au3 lines 1146-1156).
     {
@@ -553,6 +584,9 @@ int64_t Db::upsertServer(const Server& sv) {
 }
 
 bool Db::deleteServer(int64_t id) {
+  // One lock for all three DELETEs so no thread ever observes (or writes into)
+  // a server whose settings/launch rows are half gone.
+  std::lock_guard<std::mutex> lk(mu_);
   sqlite3_stmt* st = nullptr;
   if (sqlite3_prepare_v2(db_, "DELETE FROM servers WHERE id=?;", -1, &st, nullptr) !=
       SQLITE_OK) {
@@ -591,6 +625,7 @@ bool Db::deleteServer(int64_t id) {
 }
 
 LaunchConfig Db::launch(int64_t serverId) {
+  std::lock_guard<std::mutex> lk(mu_);
   LaunchConfig out;
   out.serverId = serverId;
   sqlite3_stmt* st = nullptr;
@@ -627,6 +662,7 @@ LaunchConfig Db::launch(int64_t serverId) {
 }
 
 bool Db::upsertLaunch(const LaunchConfig& cfg) {
+  std::lock_guard<std::mutex> lk(mu_);
   // Ensure the row exists (INSERT OR IGNORE), then UPDATE it - mirrors the
   // settings upsert pattern so it works whether or not a row is present.
   {
@@ -671,6 +707,7 @@ bool Db::upsertLaunch(const LaunchConfig& cfg) {
 
 bool Db::saveGlobalSteamcmd(int anonymous, const std::string& user,
                             const std::string& pass, const std::string& guard) {
+  std::lock_guard<std::mutex> lk(mu_);
   // Dynamic SET list: only the non-empty credentials are written. The SQL text
   // varies only in fixed internal column names - every VALUE stays a bound
   // parameter (never concatenated).

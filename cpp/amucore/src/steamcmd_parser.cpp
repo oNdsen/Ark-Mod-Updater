@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <limits>
 
 namespace amucore {
 
@@ -20,6 +21,21 @@ std::string numberAfter(const std::string& s, const char* key) {
   return n;
 }
 
+// s[start,end) -> long long. Deliberately does NOT use std::stoll: steamcmd's
+// stdout is untrusted, and a digit run too long for long long makes stoll throw
+// std::out_of_range on a worker thread with no handler. Anything that does not
+// fit is reported as 0, i.e. "not parsed".
+long long parseDigits(const std::string& s, size_t start, size_t end) {
+  constexpr long long kMax = (std::numeric_limits<long long>::max)();
+  long long v = 0;
+  for (size_t i = start; i < end; ++i) {
+    const int d = s[i] - '0';
+    if (v > (kMax - d) / 10) return 0;
+    v = v * 10 + d;
+  }
+  return v;
+}
+
 // The digit run right before the word "bytes" (e.g. "(1024 bytes)"). 0 if absent.
 long long bytesBeforeWord(const std::string& s) {
   size_t b = s.find("bytes");
@@ -29,7 +45,7 @@ long long bytesBeforeWord(const std::string& s) {
   size_t start = end;
   while (start > 0 && std::isdigit(static_cast<unsigned char>(s[start - 1]))) --start;
   if (start == end) return 0;
-  return std::stoll(s.substr(start, end - start));
+  return parseDigits(s, start, end);
 }
 
 }  // namespace

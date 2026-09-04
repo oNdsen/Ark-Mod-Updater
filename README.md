@@ -11,10 +11,10 @@ and edit every last server setting. One small native app.
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=for-the-badge)](LICENSE)
 [![Stars](https://img.shields.io/github/stars/oNdsen/ark-mod-updater?style=for-the-badge&color=F5A623)](https://github.com/oNdsen/ark-mod-updater/stargazers)
 
-[![Platform](https://img.shields.io/badge/platform-Windows%20x64-0078D6?logo=windows&logoColor=white)](#building)
-[![C++20](https://img.shields.io/badge/C%2B%2B-20-00599C?logo=cplusplus&logoColor=white)](#architecture)
+[![Platform](https://img.shields.io/badge/platform-Windows%20x64-0078D6?logo=windows&logoColor=white)](#-building)
+[![C++20](https://img.shields.io/badge/C%2B%2B-20-00599C?logo=cplusplus&logoColor=white)](#-architecture)
 [![UI: Sciter.JS](https://img.shields.io/badge/UI-Sciter.JS-8A2BE2)](https://sciter.com)
-[![Tests](https://img.shields.io/badge/tests-128%20passing-3DDC84)](#tests)
+[![Tests](https://img.shields.io/badge/tests-166%20passing-3DDC84)](#-tests)
 [![Issues](https://img.shields.io/github/issues/oNdsen/ark-mod-updater)](https://github.com/oNdsen/ark-mod-updater/issues)
 
 [Download](https://github.com/oNdsen/ark-mod-updater/releases/latest) •
@@ -31,12 +31,27 @@ and edit every last server setting. One small native app.
 > (2017–2026): a tiny native binary, a fully testable core, and a hardened
 > self-updater.
 
+## What's new in v2.1
+
+- The mod list shows Workshop previews, names and **Released / Updated /
+  Installed** dates - also for mods that only ever lived in `ActiveMods=`.
+- Smarter Mods-tab actions: *Install missing (N)*, *Check for updates*,
+  *Install* / *Reinstall* per selection, and proper confirm dialogs.
+- Configurator: server-then-gameplay category order with rows grouped by ini
+  file, an *Only set* filter, collapsible categories, defaults and examples
+  prefilled on click, scrollable family editors.
+- Start / Stop / Restart follow the live server state.
+- Setting definitions checked against the official wiki (`MultiHome`,
+  `ModIDS`, `CustomLiveTuningUrl`).
+
 ## ✨ Features
 
 - 🧩 **Mod install & update** — drives `steamcmd.exe` with live per-mod
   progress, unpacks ARK's `.z` archives, writes the `.mod` descriptors, and
   keeps `ActiveMods` in `GameUserSettings.ini` in sync. Names, preview images
-  and update dates come straight from the Steam Workshop.
+  and release/update dates come straight from the Steam Workshop (cached
+  locally under `lib/cache/previews`), and the buttons follow the state of
+  your mod list - *Install missing*, *Check for updates*, *Reinstall*.
 - 🚀 **Server launcher & supervisor** — AMU builds the server command line
   itself (no start scripts): start/stop/restart from the UI, graceful RCON
   shutdown (`saveworld` → confirmed fresh save → `DoExit`), crash detection
@@ -46,8 +61,9 @@ and edit every last server setting. One small native app.
   (`{minutes}` templating), world-save backup, all-or-nothing mod swap, and
   the server only restarts if it was running before.
 - ⚙️ **Full server configurator** — ~370 settings for **ASE and ASA** from
-  the community wiki, searchable and categorized, with typed editors,
-  tooltips, defaults, and raw editors for the array-style setting families
+  the community wiki, searchable, categorized and collapsible, with an
+  *Only set* filter, typed editors, tooltips, click-to-edit defaults, and raw
+  editors for the array-style setting families
   (`OverrideNamedEngramEntries`, `PerLevelStatsMultiplier[i]`, …) that
   normal INI tools cannot touch. Unrelated lines, comments and encoding are
   preserved byte-for-byte.
@@ -61,14 +77,13 @@ and edit every last server setting. One small native app.
 
 ## 📸 Screenshots
 
-<!-- Drop PNGs into docs/screenshots/ and they appear here. -->
-| Dashboard & mods | Server & launch options |
+| Mods | Server & launch options |
 | :---: | :---: |
 | ![Mods view](docs/screenshots/mods.png) | ![Server view](docs/screenshots/server.png) |
-| **Configurator (370 settings)** | **Live update run** |
+| **Configurator** | **Live update run** |
 | ![Configurator](docs/screenshots/config.png) | ![Update run](docs/screenshots/update.png) |
 
-## 🏗️ Architecture
+## 🏗 Architecture
 
 Two layers, cleanly separated so the entire core is testable without a GUI:
 
@@ -90,7 +105,7 @@ Two layers, cleanly separated so the entire core is testable without a GUI:
 | `steamcmd_parser` | SteamCMD stdout → typed progress events |
 | `zunpack` | ARK/Valve `.z` decompressor |
 | `mod_writer` | `.mod` descriptor generator |
-| `workshop` | Workshop page scraping (name, preview, last update) |
+| `workshop` | Workshop page scraping (name, preview, posted/updated dates) |
 | `rcon` | Minimal Source-RCON client |
 | `credstore` | DPAPI encrypt/decrypt |
 | `updatecheck` | Manifest + SHA-256 self-update client |

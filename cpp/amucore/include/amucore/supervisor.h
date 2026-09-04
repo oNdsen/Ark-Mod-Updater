@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <mutex>
@@ -55,6 +56,12 @@ struct DecideInput {
   int failures = 0;
   int64_t uptimeSec = 0;     // seconds since start (valid when Running)
   bool backoffElapsed = false;  // when Crashed: nextRestartAt has passed
+  // Desired Stopped + a still-alive process: has the stop-retry damper expired?
+  // A stop that could not take the process down (AMU unelevated / no rights to
+  // terminate) would otherwise be retried on EVERY tick - each retry re-runs
+  // saveworld + the fresh-save wait + DoExit. Defaults to true so a first Stop
+  // is always immediate.
+  bool stopRetryElapsed = true;
 };
 
 // PURE state-transition table (the heart of crash-vs-user-stop). Unit-tested
@@ -95,6 +102,15 @@ struct StopOptions {
 
 enum class StopStatus { CleanExit, TerminatedAfterTimeout, AlreadyStopped, NoHandle };
 
+// PURE: did the stop sequence leave the process RUNNING? NoHandle is the "stop
+// did not complete" marker: no rights to open the process for SYNCHRONIZE|
+// PROCESS_TERMINATE while it is provably still alive (AMU unelevated, server
+// elevated), a TerminateProcess that did not take, or a supervisor-shutdown
+// abort that deliberately left the game server alone. A caller must NEVER claim
+// the server stopped in that case - the watcher would re-adopt the live process
+// and silently flip the desired state back to Running.
+bool stopLeftProcessRunning(StopStatus st);
+
 // Named, tunable timeouts (values mirror the AutoIt where one existed).
 constexpr int kSaveConfirmPollMs = 1000;
 constexpr int kSaveConfirmTimeoutMs = 120000;  // AutoIt 2-min hard timeout
@@ -103,6 +119,7 @@ constexpr int kGracefulExitMs = 60000;         // wait after DoExit
 constexpr int kKillWaitMs = 5000;              // reap after TerminateProcess
 constexpr int kStartupGraceMs = 5000;          // instant-exit detection window
 constexpr int kWatcherPollMs = 3000;           // adoption sweep cadence
+constexpr int kStopRetryMs = 60000;            // damper after a stop that failed
 
 // --- detection ---------------------------------------------------------------
 
@@ -138,6 +155,13 @@ struct ServerStatus {
 // Owns ONE watcher thread. Start/Stop requests flip desired-state and wake the
 // watcher; blocking work (CreateProcessW, multi-minute stops) runs on detached
 // worker threads so one server can never freeze detection for the others.
+//
+// Lifetime rule for those detached workers: a worker "slot" is claimed in
+// inFlight_ (under mu_, only while running_) BEFORE the thread is created and
+// released as the very last thing the worker touches. shutdown() clears
+// running_ first, so no new slot can appear, then waits for the counter to
+// reach zero before it closes stopEvent_/wakeEvent_ - which is what makes it
+// safe for a worker to hold stopEvent_ and to call back into logSink_.
 class Supervisor {
  public:
   // Builds the launch command for a server at (re)start time - reads db+ini live.
@@ -194,20 +218,47 @@ class Supervisor {
     Actual actual = Actual::Stopped;
     bool updating = false;
     bool busy = false;          // a worker is starting/stopping this server
+    // untrack() could not erase this entry because a worker still owns it; the
+    // worker's tail (endWork) closes the handle and erases it. An untracked
+    // entry is invisible to find()/statusAll()/the watcher, so it can never be
+    // acted on again - but track() revives it, which keeps the "one entry (and
+    // one worker) per serverId" invariant across an untrack/track cycle.
+    bool untracked = false;
+    // Bumped on every worker dispatch (see beginWork). A worker only ever
+    // mutates the entry whose epoch matches the one it was dispatched with, so
+    // a tail can never write into a recreated entry.
+    uint64_t epoch = 0;
     int failures = 0;
     uint32_t pid = 0;
     void* hProcess = nullptr;   // owned HANDLE (null for adopted-without-handle)
     int64_t startedAtTicks = 0;      // 100ns ticks (FILETIME epoch) at start
     int64_t nextRestartAtTicks = 0;  // when Crashed: earliest restart time
+    int64_t nextStopRetryAtTicks = 0;  // after a failed stop: earliest retry
     uint32_t lastExitCode = 0;
     std::string detail;
   };
 
+  // What a dispatched worker does. Restart == stop, then start again.
+  enum class Work { Start, Stop, Restart };
+
   void watcherLoop();
-  void doStart(int64_t serverId);                          // worker
-  void doStop(int64_t serverId, const StopOptions& opt);   // worker
+  bool watcherTick();  // one wait + reconcile pass; true == shutting down
+  void runWork(int64_t serverId, uint64_t epoch, Work kind);       // worker body
+  void doStart(int64_t serverId, uint64_t epoch);                  // worker
+  void doStop(int64_t serverId, uint64_t epoch, const StopOptions& opt);  // worker
+  // Marks `s` busy, hands out a fresh epoch and claims an in-flight slot.
+  // Callers hold mu_ AND have checked running_; endWork releases the slot.
+  uint64_t beginWork(Managed& s);
+  // Worker tail: clears busy, erases a deferred-untracked entry, wakes the
+  // watcher and releases the in-flight slot. Callers must NOT hold mu_; this is
+  // a worker's last touch of *this.
+  void endWork(int64_t serverId, uint64_t epoch) noexcept;
+  // Starts a detached worker. Never throws: on failure the in-flight slot and
+  // `busy` are released (via endWork) and false is returned.
+  bool spawnWorker(int64_t serverId, uint64_t epoch, Work kind) noexcept;
   Managed* find(int64_t serverId);                          // callers hold mu_
-  void log(int64_t serverId, const char* type, const std::string& msg);
+  Managed* findEpoch(int64_t serverId, uint64_t epoch);     // callers hold mu_
+  void log(int64_t serverId, const char* type, const std::string& msg) noexcept;
 
   std::mutex mu_;
   std::vector<Managed> servers_;
@@ -219,6 +270,8 @@ class Supervisor {
   void* stopEvent_ = nullptr;  // HANDLE
   std::thread watcher_;
   bool running_ = false;
+  uint64_t epochSeq_ = 0;           // monotonic dispatch counter (under mu_)
+  std::atomic<int> inFlight_{0};    // worker slots claimed but not yet released
 };
 
 }  // namespace amucore

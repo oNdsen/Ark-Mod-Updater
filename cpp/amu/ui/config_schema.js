@@ -1840,7 +1840,7 @@ const CONFIG_SCHEMA = {
         "ASE",
         "ASA"
       ],
-      "description": "The local IP address to bind the server to on a multi-interface host. Only takes effect when the -MultiHome command-line flag is also supplied.",
+      "description": "The local IP address to bind the server to on a multi-interface host (the official wiki spells the key MULTIHOME - ini keys are case-insensitive). This one field is all you need: whenever it is set, AMU adds the matching -MULTIHOME command-line flag (ASE) or ?MultiHome= URL option (ASA) to the launch command automatically.",
       "enumValues": null,
       "example": "192.168.1.50",
       "complex": false
@@ -1891,22 +1891,6 @@ const CONFIG_SCHEMA = {
       "description": "How many seconds the Message of the Day stays on screen for a joining player.",
       "enumValues": null,
       "example": null,
-      "complex": false
-    },
-    {
-      "key": "MULTIHOME",
-      "file": "GameUserSettings",
-      "section": "MultiHome",
-      "type": "string",
-      "default": "",
-      "category": "Network & Performance",
-      "games": [
-        "ASE",
-        "ASA"
-      ],
-      "description": "Alternate placement of the multihome bind IP, under the [MultiHome] (documented as [/MultiHome]) section. Requires the -MultiHome command-line flag to activate. Redundant with [SessionSettings] MultiHome; set only one.",
-      "enumValues": null,
-      "example": "192.168.1.50",
       "complex": false
     },
     {
@@ -2080,7 +2064,7 @@ const CONFIG_SCHEMA = {
         "ASE",
         "ASA"
       ],
-      "description": "The -MultiHome dash flag activates multihoming; the actual bind IP comes from the MultiHome value in GameUserSettings.ini (or -MultiHome=<IP> combined form on the command line).",
+      "description": "The -MultiHome dash flag activates multihoming; the actual bind IP comes from the MultiHome value in GameUserSettings.ini. AMU emits this flag automatically whenever that ini value is set, so it never needs to be configured separately.",
       "enumValues": null,
       "example": null,
       "complex": false
@@ -5341,15 +5325,15 @@ const CONFIG_SCHEMA = {
       "file": "GameUserSettings",
       "section": "ServerSettings",
       "type": "string",
-      "default": "https://cdn2.arkdedicated.com/asa/livetuningoverloads.json",
+      "default": "",
       "category": "Advanced",
       "games": [
         "ASE",
         "ASA"
       ],
-      "description": "Direct link to the live tuning file. ASA official servers use https://cdn2.arkdedicated.com/asa/livetuningoverloads.json (HTTPS OK); ASE used http://arkdedicated.com/DefaultOverloads.json (HTTP only).",
+      "description": "Direct link to a live-tuning overrides file (Wildcard remote balance tweaks). Leave it unset to keep ARK built-in source. The ASE built-in file is http://arkdedicated.com/DefaultOverloads.json (HTTP only, verified reachable). The https://cdn2.arkdedicated.com/asa/ URL previously listed here answers with an EMPTY document, so no verified ASA URL is known - set one only if you host your own overrides file.",
       "enumValues": null,
-      "example": null,
+      "example": "http://arkdedicated.com/DefaultOverloads.json",
       "complex": false
     },
     {
@@ -5501,21 +5485,6 @@ const CONFIG_SCHEMA = {
       "enumValues": null,
       "example": null,
       "complex": false
-    },
-    {
-      "key": "ModIDS",
-      "file": "Game",
-      "section": "ModInstaller",
-      "type": "array",
-      "default": "",
-      "category": "General",
-      "games": [
-        "ASE"
-      ],
-      "description": "ASE: one Steam Workshop ID per line for -automanagedmods to download/install/update. Not used in ASA (CurseForge -mods).",
-      "enumValues": null,
-      "example": "ModIDS=731604991",
-      "complex": true
     },
     {
       "key": "ActiveTotalConversion",
