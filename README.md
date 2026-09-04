@@ -45,8 +45,9 @@ and edit every last server setting. One small native app.
   number of RCON broadcasts with their own minute marks (`{min}`). Default:
   *Map backup in 1 minute*, then *Map backup now*. Remove every row for a
   silent backup.
-- **Automation tab.** Shutdown warnings, scheduled update checks and map
-  backups are configured per server on their own tab.
+- **Automation tab.** Everything AMU does on its own for a server lives on
+  one tab: start with AMU, auto-restart on crash, shutdown warnings,
+  scheduled update checks and map backups.
 - Review round: two servers scheduled for the same minute both run (queued),
   a mod's load order can be changed with *Up* / *Down*, rolling backups of
   `GameUserSettings.ini` / `Game.ini` before every AMU write

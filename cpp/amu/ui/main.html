@@ -2113,10 +2113,33 @@ function renderAutomation(host) {
   const wp = ensureWarnPlan(s);
   const sc = ensureSchedules(s);
   const bk = ensureBackupCfg(s);
-  if (!wp || !sc || !bk) {
+  const lc = ensureLaunch(s);  // its autoStart/autoRestart flags are edited here
+  if (!wp || !sc || !bk || !lc) {
     host.appendChild(el(`<div class="formnote" style="display:block">Could not load this server's automation settings - see the Logs tab. Nothing can be saved from this screen until it loads.</div>`));
     return;
   }
+  // --- automatic start & restart: the launch-config flags -------------------
+  // The Server tab keeps the command line; everything AMU does on its own for
+  // this server lives here. The switches edit the cached launch config in
+  // place; "Save automation" writes them as a partial update (the other
+  // launch fields keep their stored values) and re-tracks the supervisor.
+  const lblk = el(`<div class="block">
+    <div class="blabel">AUTOMATIC START &amp; RESTART</div>
+    <div class="toggles">
+      <div class="toggle l-autostart ${lc.autoStart ? "on" : ""}"><div class="box"></div><span>Start with AMU</span></div>
+      <div class="toggle l-autorestart ${lc.autoRestart ? "on" : ""}"><div class="box"></div><span>Auto-restart on crash</span></div>
+    </div>
+    <div class="muted-note"><b>Start with AMU</b> launches this server when AMU starts. <b>Auto-restart</b> brings it back after an unexpected exit, with a growing delay; after repeated failures AMU gives up and marks the server failed. A Stop from the UI is never auto-restarted.</div></div>`);
+  $(".l-autostart", lblk).addEventListener("click", () => {
+    lc.autoStart = lc.autoStart ? 0 : 1;
+    $(".l-autostart", lblk).classList.toggle("on", !!lc.autoStart);
+  });
+  $(".l-autorestart", lblk).addEventListener("click", () => {
+    lc.autoRestart = lc.autoRestart ? 0 : 1;
+    $(".l-autorestart", lblk).classList.toggle("on", !!lc.autoRestart);
+  });
+  host.appendChild(lblk);
+
   // --- pre-shutdown warnings: the dynamic replacement for the AutoIt trio ---
   // Rows edit the cached plan in place; "Save Server" writes it. Everything
   // here stays visible - no display-toggled children (see buildCfgRow's note).
@@ -2300,13 +2323,18 @@ function renderAutomation(host) {
     if (bk._keepInvalid) return fail("Archives to keep must be a number between 1 and 1000.");
     let ok = true;
     if (NATIVE) {
-      try { ok = !!NATIVE.saveWarnPlan(s.id, wp) && !!NATIVE.saveSchedules(s.id, sc) && !!NATIVE.saveBackupConfig(s.id, bk); }
+      const flags = { autoStart: lc.autoStart ? 1 : 0, autoRestart: lc.autoRestart ? 1 : 0 };  // partial launch update
+      try { ok = !!NATIVE.saveWarnPlan(s.id, wp) && !!NATIVE.saveSchedules(s.id, sc) && !!NATIVE.saveBackupConfig(s.id, bk) && !!NATIVE.saveLaunchConfig(s.id, flags); }
       catch (e) { console.log("save automation failed: " + e); ok = false; }
+    } else {
+      STUB_LAUNCH.autoStart = lc.autoStart ? 1 : 0;  // stub: survive the cache drop below
+      STUB_LAUNCH.autoRestart = lc.autoRestart ? 1 : 0;
     }
     if (!ok) return fail("Save failed - see the Logs tab.");
     s._wp = null;  // re-read: ids and last-run stamps come back from the DB
     s._sc = null;
     s._bk = null;
+    s._lc = null;
     automationNote = "Saved";
     render();
   });
@@ -2377,16 +2405,13 @@ function renderServer(host) {
       <div class="field wide"><label>Extra Args <span class="qmark">(?)</span></label><input|text class="f-extra" value="${escAttr(lc.extraArgs)}"></div>
     </div>
     <div class="toggles">
-      <div class="toggle t-autorestart ${lc.autoRestart ? "on" : ""}"><div class="box"></div><span>Auto-restart on crash</span></div>
       <div class="toggle t-battleye ${lc.battleye ? "on" : ""}"><div class="box"></div><span>BattlEye</span></div>
       <div class="toggle t-crossplay ${lc.crossplay ? "on" : ""}"><div class="box"></div><span>Crossplay</span></div>
-      <div class="toggle t-autostart ${lc.autoStart ? "on" : ""}"><div class="box"></div><span>Start with AMU</span></div>
     </div>
     <div class="muted-note">RCON ${lc.rconEnabled ? "enabled" : "disabled"} - IP ${s.rconIp || "(MultiHome not set)"} - RCONEnabled/MultiHome via GameUserSettings.ini or the Config tab</div>
   </div>`);
   attachTip($(".qmark", blk), "Extra command-line arguments appended verbatim to the launch " +
     "command, after the arguments AMU builds (map, session, ports, mods).");
-  attachTip($(".t-autostart", blk), "Starts this server automatically when AMU launches.");
   for (const t of blk.querySelectorAll(".toggle"))
     t.addEventListener("click", () => t.classList.toggle("on"));
   host.appendChild(blk);
@@ -2400,7 +2425,7 @@ function renderServer(host) {
     </div>
     <div class="field"><label>Extra dash flags (e.g. -NoTransferFromFiltering -ForceAllowCaveFlyers)</label><input|text class="f-extraflags" value="${escAttr(lc.extraFlags)}"></div>
     <div class="field"><label>Performance flags (e.g. -USEALLAVAILABLECORES -high)</label><input|text class="f-perfflags" value="${escAttr(lc.perfFlags)}"></div>
-    <div class="muted-note" style="margin-top:0">Appended to the command line as typed. Shutdown warnings, scheduled checks and backups live on the <b>Automation</b> tab.</div></div>`);
+    <div class="muted-note" style="margin-top:0">Appended to the command line as typed. Everything AMU does on its own - start with AMU, auto-restart, shutdown warnings, scheduled checks, backups - lives on the <b>Automation</b> tab.</div></div>`);
   host.appendChild(adv);
 
   const act = el(`<div class="actions">
@@ -2425,10 +2450,8 @@ function renderServer(host) {
       extraArgs: val(".f-extra"),
       clusterId: val(".f-clusterid"), clusterDir: val(".f-clusterdir"),
       extraFlags: val(".f-extraflags"), perfFlags: val(".f-perfflags"),
-      autoRestart: $(".t-autorestart", blk).classList.contains("on"),
       battleye: $(".t-battleye", blk).classList.contains("on"),
       crossplay: $(".t-crossplay", blk).classList.contains("on"),
-      autoStart: $(".t-autostart", blk).classList.contains("on") ? 1 : 0,
     };
     if (NATIVE) {
       // Native side takes plain JS objects, NOT JSON strings.
@@ -3482,7 +3505,7 @@ function render() {
   if (screen !== "settings") stopAupdPolling();  // same for the About update-check poll
   if (screen !== "mods") stopModMetaPoll();      // and for the Workshop backfill
   if (screen !== "automation") {  // unsaved automation edits live only there; so does the backup poll
-    for (const sv of servers) { sv._wp = null; sv._sc = null; sv._bk = null; }
+    for (const sv of servers) { sv._wp = null; sv._sc = null; sv._bk = null; sv._lc = null; }
     stopBkPolling();
     bkPaint = null;
   }
