@@ -210,6 +210,13 @@ bool Db::ensureSchema() {
   addColumnIfMissing("settings", "steamcmd_user", "INTEGER");
   addColumnIfMissing("settings", "steamcmd_pass", "INTEGER");
   addColumnIfMissing("settings", "steamcmd_guard", "INTEGER");
+  addColumnIfMissing("settings", "warnplan", "TEXT");  // AMU 2.2: pre-shutdown warning plan
+  // AMU 2.2: scheduled update checks (schedule.h).
+  if (!tableExists("schedules"))
+    if (!exec("CREATE TABLE schedules (id INTEGER PRIMARY KEY AUTOINCREMENT, enabled INTEGER, "
+              "name TEXT, hour INTEGER, minute INTEGER, days INTEGER, server_id INTEGER, "
+              "last_run TEXT);"))
+      return false;
   // launch columns: the DEFAULT is smuggled into the type arg (addColumnIfMissing
   // appends it verbatim), so ALTER-added columns on a historical DB carry defaults.
   addColumnIfMissing("launch", "game", "TEXT DEFAULT 'ASE'");
@@ -250,7 +257,7 @@ std::vector<Server> Db::servers() {
   const char* sql =
       "SELECT s.id, s.name, s.path, s.startscript, s.map, "
       "t.server_id, t.debug, t.backup, t.force, t.restarttime, "
-      "t.msg1, t.msg2, t.msg3 "
+      "t.msg1, t.msg2, t.msg3, t.warnplan "
       "FROM servers s JOIN settings t ON s.id = t.server_id ORDER BY s.id;";
   if (sqlite3_prepare_v2(db_, sql, -1, &st, nullptr) != SQLITE_OK) {
     lastError_ = sqlite3_errmsg(db_);
@@ -271,6 +278,7 @@ std::vector<Server> Db::servers() {
     sv.msg1 = colText(st, 10);
     sv.msg2 = colText(st, 11);
     sv.msg3 = colText(st, 12);
+    sv.warnplan = colText(st, 13);
     out.push_back(std::move(sv));
   }
   sqlite3_finalize(st);
@@ -284,7 +292,7 @@ Settings Db::settings(int64_t serverId) {
   sqlite3_stmt* st = nullptr;
   const char* sql =
       "SELECT server_id, debug, backup, force, restarttime, msg1, msg2, msg3, "
-      "steamcmd_anonymous, steamcmd_user, steamcmd_pass, steamcmd_guard "
+      "steamcmd_anonymous, steamcmd_user, steamcmd_pass, steamcmd_guard, warnplan "
       "FROM settings WHERE server_id = ?;";
   if (sqlite3_prepare_v2(db_, sql, -1, &st, nullptr) != SQLITE_OK) {
     lastError_ = sqlite3_errmsg(db_);
@@ -306,6 +314,7 @@ Settings Db::settings(int64_t serverId) {
     out.steamcmdUser = colText(st, 9);
     out.steamcmdPass = colText(st, 10);
     out.steamcmdGuard = colText(st, 11);
+    out.warnplan = colText(st, 12);
   }
   sqlite3_finalize(st);
   return out;
@@ -726,6 +735,124 @@ bool Db::saveGlobalSteamcmd(int anonymous, const std::string& user,
   if (!user.empty()) bindText(st, idx++, user);
   if (!pass.empty()) bindText(st, idx++, pass);
   if (!guard.empty()) bindText(st, idx++, guard);
+  const bool ok = sqlite3_step(st) == SQLITE_DONE;
+  sqlite3_finalize(st);
+  if (!ok) lastError_ = sqlite3_errmsg(db_);
+  return ok;
+}
+
+
+bool Db::saveWarnPlan(int64_t serverId, const std::string& plan) {
+  std::lock_guard<std::mutex> lk(mu_);
+  sqlite3_stmt* st = nullptr;
+  // The settings row normally exists (upsertServer seeds it); make sure anyway.
+  if (sqlite3_prepare_v2(db_, "INSERT OR IGNORE INTO settings(server_id) VALUES(?);", -1, &st,
+                         nullptr) != SQLITE_OK) {
+    lastError_ = sqlite3_errmsg(db_);
+    return false;
+  }
+  sqlite3_bind_int64(st, 1, serverId);
+  sqlite3_step(st);
+  sqlite3_finalize(st);
+  if (sqlite3_prepare_v2(db_, "UPDATE settings SET warnplan = ? WHERE server_id = ?;", -1, &st,
+                         nullptr) != SQLITE_OK) {
+    lastError_ = sqlite3_errmsg(db_);
+    return false;
+  }
+  bindText(st, 1, plan);
+  sqlite3_bind_int64(st, 2, serverId);
+  const bool ok = sqlite3_step(st) == SQLITE_DONE;
+  sqlite3_finalize(st);
+  if (!ok) lastError_ = sqlite3_errmsg(db_);
+  return ok;
+}
+
+std::vector<Schedule> Db::schedules() {
+  std::lock_guard<std::mutex> lk(mu_);
+  std::vector<Schedule> out;
+  sqlite3_stmt* st = nullptr;
+  const char* sql =
+      "SELECT id, enabled, name, hour, minute, days, server_id, last_run "
+      "FROM schedules ORDER BY id;";
+  if (sqlite3_prepare_v2(db_, sql, -1, &st, nullptr) != SQLITE_OK) {
+    lastError_ = sqlite3_errmsg(db_);
+    return out;
+  }
+  while (sqlite3_step(st) == SQLITE_ROW) {
+    Schedule s;
+    s.id = sqlite3_column_int64(st, 0);
+    s.enabled = sqlite3_column_int(st, 1) != 0;
+    s.name = colText(st, 2);
+    s.hour = sqlite3_column_int(st, 3);
+    s.minute = sqlite3_column_int(st, 4);
+    s.days = sqlite3_column_int(st, 5);
+    s.serverId = sqlite3_column_int64(st, 6);
+    s.lastRun = colText(st, 7);
+    out.push_back(std::move(s));
+  }
+  sqlite3_finalize(st);
+  return out;
+}
+
+bool Db::saveSchedules(int64_t serverId, const std::vector<Schedule>& list) {
+  std::lock_guard<std::mutex> lk(mu_);
+  if (sqlite3_exec(db_, "BEGIN;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+    lastError_ = sqlite3_errmsg(db_);
+    return false;
+  }
+  sqlite3_stmt* st = nullptr;
+  bool ok = sqlite3_prepare_v2(db_, "DELETE FROM schedules WHERE server_id = ?;", -1, &st,
+                               nullptr) == SQLITE_OK;
+  if (ok) {
+    sqlite3_bind_int64(st, 1, serverId);
+    ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    st = nullptr;
+  }
+  if (ok && sqlite3_prepare_v2(db_,
+                               "INSERT INTO schedules(id, enabled, name, hour, minute, days, "
+                               "server_id, last_run) VALUES(?, ?, ?, ?, ?, ?, ?, ?);",
+                               -1, &st, nullptr) != SQLITE_OK) {
+    ok = false;
+  }
+  for (size_t i = 0; ok && i < list.size(); ++i) {
+    const Schedule& s = list[i];
+    sqlite3_reset(st);
+    sqlite3_clear_bindings(st);
+    if (s.id > 0) sqlite3_bind_int64(st, 1, s.id); else sqlite3_bind_null(st, 1);
+    sqlite3_bind_int(st, 2, s.enabled ? 1 : 0);
+    bindText(st, 3, s.name);
+    sqlite3_bind_int(st, 4, s.hour);
+    sqlite3_bind_int(st, 5, s.minute);
+    sqlite3_bind_int(st, 6, s.days);
+    sqlite3_bind_int64(st, 7, serverId);  // always this server's rows
+    bindText(st, 8, s.lastRun);
+    ok = sqlite3_step(st) == SQLITE_DONE;
+  }
+  if (st) sqlite3_finalize(st);
+  if (!ok) {
+    lastError_ = sqlite3_errmsg(db_);
+    sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+    return false;
+  }
+  if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+    lastError_ = sqlite3_errmsg(db_);
+    sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+    return false;
+  }
+  return true;
+}
+
+bool Db::markScheduleRun(int64_t id, const std::string& stamp) {
+  std::lock_guard<std::mutex> lk(mu_);
+  sqlite3_stmt* st = nullptr;
+  if (sqlite3_prepare_v2(db_, "UPDATE schedules SET last_run = ? WHERE id = ?;", -1, &st,
+                         nullptr) != SQLITE_OK) {
+    lastError_ = sqlite3_errmsg(db_);
+    return false;
+  }
+  bindText(st, 1, stamp);
+  sqlite3_bind_int64(st, 2, id);
   const bool ok = sqlite3_step(st) == SQLITE_DONE;
   sqlite3_finalize(st);
   if (!ok) lastError_ = sqlite3_errmsg(db_);

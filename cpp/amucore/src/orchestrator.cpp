@@ -19,6 +19,7 @@
 #include "amucore/mod_writer.h"
 #include "amucore/rcon.h"
 #include "amucore/serverconfig.h"
+#include "amucore/warnplan.h"
 #include "amucore/steamcmd_parser.h"
 #include "amucore/updatecheck.h"
 #include "amucore/workshop.h"
@@ -878,10 +879,6 @@ bool Orchestrator::updateServer(const Server& srv,
   };
   const std::string idStr = std::to_string(srv.id);
   const std::string gus = gusIniPath(srv.path);
-  const std::string minutes = std::to_string(srv.restarttime);
-  const std::string msg1 = replaceAll(srv.msg1, "{minutes}", minutes);
-  const std::string msg2 = replaceAll(srv.msg2, "{minutes}", minutes);
-  const std::string msg3 = replaceAll(srv.msg3, "{minutes}", minutes);
 
   const bool rconEnabled =
       toLowerAscii(iniRead(gus, "ServerSettings", "RCONEnabled", "False")) == "true";
@@ -940,14 +937,18 @@ bool Orchestrator::updateServer(const Server& srv,
   // right away instead of after a full tick. skip_ keeps its user-facing
   // semantics: it is CONSUMED by this wait (a later countdown runs in full),
   // while abort_ is sticky and ends every wait of the run.
-  auto waitSecs = [this](int secs) {
+  // Returns false when the wait was cut short by Skip or by abort_. `extra`
+  // is added to the published countdownSecs so the UI shows the time until
+  // the SHUTDOWN, not just until the next warning.
+  auto waitSecs = [this](int secs, int extra) -> bool {
     constexpr int kSliceMs = 100;
+    bool skipped = false;
     for (int remaining = secs; remaining > 0; --remaining) {
       if (abort_.load()) break;
-      if (skip_.exchange(false)) break;
+      if (skip_.exchange(false)) { skipped = true; break; }
       {
         std::lock_guard<std::mutex> lk(mu_);
-        st_.countdownSecs = remaining;
+        st_.countdownSecs = remaining + extra;
       }
       for (int slept = 0; slept < 1000; slept += kSliceMs) {
         Sleep(kSliceMs);
@@ -956,6 +957,7 @@ bool Orchestrator::updateServer(const Server& srv,
     }
     std::lock_guard<std::mutex> lk(mu_);
     st_.countdownSecs = -1;
+    return !skipped && !abort_.load();
   };
   auto broadcast = [&](const std::string& msg, const char* which) {
     RconClient rc;
@@ -1033,19 +1035,38 @@ bool Orchestrator::updateServer(const Server& srv,
         }
 
         if (pid != 0) {
+          // Pre-shutdown warnings: the per-server plan (warnplan.h). An older
+          // database that never stored a plan gets the AutoIt msg1/msg2/msg3
+          // columns as a plan, a fresh one the default plan. Steps run from
+          // the largest minute mark down; a 0-minute step is sent right before
+          // the stop. The per-server force flag skips all of it (AutoIt
+          // semantics: force = no player warning).
+          std::vector<WarnStep> plan = parseWarnPlan(srv.warnplan);
+          if (plan.empty() && srv.warnplan.empty()) {
+            plan = legacyWarnPlan(srv.restarttime, srv.msg1, srv.msg2, srv.msg3);
+            if (plan.empty()) plan = defaultWarnPlan();
+          }
+          const std::vector<WarnStep> steps = countdownSteps(plan);
           if (srv.force == 0) {
-            if (rconEnabled) {
-              line("Sending RCON MSG1: " + msg1);
-              line("Time left for MSG2: " + std::to_string(srv.restarttime - 1) + " Minutes");
-              log("debug", "Sending RCON MSG1 to " + rconIp + ": " + msg1);
-              broadcast(msg1, "msg1");
+            if (!rconEnabled) {
+              line("RCON is disabled for server " + idStr + " - stopping without a player warning.");
+            } else if (steps.empty()) {
+              line("No shutdown warnings configured for server " + idStr + " - stopping right away.");
+            } else {
               setPhase("countdown");
-              waitSecs(srv.restarttime * 60 - 60);
-              line("Sending RCON MSG2: " + msg2);
-              log("debug", "Sending RCON MSG2 to " + rconIp + ": " + msg2);
-              line("Time left for MSG3: 1 Minute");
-              broadcast(msg2, "msg2");
-              waitSecs(60);
+              // Skip: the remaining texts still go out (back to back, no waits)
+              // so the players get the final notice - the AutoIt behaviour.
+              bool skipped = false;
+              for (size_t i = 0; i < steps.size() && !abort_.load(); ++i) {
+                const std::string text = renderWarnText(steps[i].text, steps[i].minutes);
+                line("RCON warning (" + std::to_string(steps[i].minutes) + " min): " + text);
+                log("debug", "Sending RCON warning to " + rconIp + ": " + text);
+                broadcast(text, ("warn" + std::to_string(steps[i].minutes)).c_str());
+                if (skipped) continue;
+                const int wait = secondsUntilNext(steps, i);
+                const int after = (i + 1 < steps.size()) ? steps[i + 1].minutes * 60 : 0;
+                if (wait > 0 && !waitSecs(wait, after)) skipped = true;
+              }
               setPhase("install");
             }
           } else {
@@ -1057,12 +1078,7 @@ bool Orchestrator::updateServer(const Server& srv,
           // have to sit through all of it. Nothing has been touched yet here,
           // so leaving now is clean - the server keeps running.
           if (abort_.load()) break;
-          if (rconEnabled) {
-            line("Sending RCON MSG3: " + msg3);
-            log("debug", "Sending RCON MSG3 to " + rconIp + ": " + msg3);
-            broadcast(msg3, "msg3");
-            Sleep(500);
-          }
+          if (rconEnabled && !steps.empty()) Sleep(500);  // let the last broadcast land
           // saveworld + fresh-save confirm + DoExit + terminate fallback. Only go
           // through the Supervisor when it actually sees the server up - calling
           // stopForUpdate on a tracked-but-stopped entry would leave its updating

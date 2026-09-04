@@ -12,6 +12,8 @@ add_executable(amu_tests
   test_orchestrator.cpp
   test_updatecheck.cpp
   test_db.cpp
+  test_warnplan.cpp
+  test_schedule.cpp
 )
 target_link_libraries(amu_tests PRIVATE amucore doctest::doctest)
 target_compile_features(amu_tests PRIVATE cxx_std_20)

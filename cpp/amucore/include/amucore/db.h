@@ -11,6 +11,8 @@
 // bound parameters - never string concatenation.
 struct sqlite3;  // opaque; avoids leaking <sqlite3.h> into consumers
 
+#include "amucore/schedule.h"
+
 namespace amucore {
 
 // One row of "SELECT * FROM servers JOIN settings ON id = server_id" - the
@@ -31,6 +33,7 @@ struct Server {
   std::string msg1;           // $eMSG1     settings.msg1
   std::string msg2;           // $eMSG2     settings.msg2
   std::string msg3;           // $eMSG3     settings.msg3
+  std::string warnplan;       // settings.warnplan (AMU 2.2, warnplan.h format); "" = not stored
 };
 
 // One "-1" settings row is the app-global settings (no server). settings(server_id,...)
@@ -44,6 +47,7 @@ struct Settings {
   std::string msg1;
   std::string msg2;
   std::string msg3;
+  std::string warnplan;   // AMU 2.2 pre-shutdown warning plan (warnplan.h)
   int steamcmdAnonymous = 0;
   // The AutoIt stores DPAPI-encrypted STRINGS ("DPAPI:0x...") in these columns
   // (the INTEGER column type is only SQLite type *affinity* - text survives
@@ -148,6 +152,18 @@ class Db {
   // The settings row for `serverId` (default -1 = app-global). `present` is
   // false in the result when the row is absent.
   Settings settings(int64_t serverId = -1);
+
+  // AMU 2.2: per-server pre-shutdown warning plan in the warnplan.h storage
+  // format. Writes settings.warnplan; the settings row is created when missing.
+  bool saveWarnPlan(int64_t serverId, const std::string& plan);
+
+  // AMU 2.2: scheduled update checks (schedule.h), configured PER SERVER.
+  // schedules() returns every row (the watcher walks them all); saveSchedules
+  // replaces one server's rows in a transaction (ids > 0 are kept, server_id
+  // is forced to `serverId`); markScheduleRun stamps last_run after a firing.
+  std::vector<Schedule> schedules();
+  bool saveSchedules(int64_t serverId, const std::vector<Schedule>& list);
+  bool markScheduleRun(int64_t id, const std::string& stamp);
 
   // All mods (ordered by modid).
   std::vector<Mod> mods();

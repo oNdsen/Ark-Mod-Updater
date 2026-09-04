@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -20,10 +21,12 @@
 #include "amucore/credstore.h"
 #include "amucore/db.h"
 #include "amucore/orchestrator.h"
+#include "amucore/schedule.h"
 #include "amucore/serverconfig.h"
 #include "amucore/supervisor.h"
 #include "amucore/updatecheck.h"
 #include "amucore/version.h"
+#include "amucore/warnplan.h"
 #include "amucore/workshop.h"
 #include "sciter-x.h"
 #include "sciter-x-window.hpp"
@@ -349,9 +352,17 @@ class AmuWindow : public sciter::window {
 
     // First app-update check right at launch; the UI polls getUpdateCheck().
     startUpdateCheck();
+
+    // Scheduled update checks (schedule.h): a 20s watcher over the schedules
+    // table. Started last, so everything it touches (db_, orchestrator_) is up.
+    schedThread_ = std::thread([this]() { schedulerLoop(); });
   }
 
-  ~AmuWindow() override { supervisor_.shutdown(); }
+  ~AmuWindow() override {
+    schedStop_.store(true);
+    if (schedThread_.joinable()) schedThread_.join();  // sleeps in 100ms slices
+    supervisor_.shutdown();
+  }
 
   // --- native functions exposed to the UI as Window.this.amu.* --------------
 
@@ -626,6 +637,7 @@ class AmuWindow : public sciter::window {
   // delete the DB rows. Named ...ById because <windows.h> macro-claims DeleteServer.
   bool deleteServerById(int serverId) {
     supervisor_.untrack(serverId);
+    db_.saveSchedules(serverId, {});  // its scheduled checks go with it
     return db_.deleteServer(serverId);
   }
 
@@ -1091,6 +1103,10 @@ class AmuWindow : public sciter::window {
       SOM_FUNC(removeMod),
       SOM_FUNC(refreshModMeta),
       SOM_FUNC(getModMetaStatus),
+      SOM_FUNC(getWarnPlan),
+      SOM_FUNC(saveWarnPlan),
+      SOM_FUNC(getSchedules),
+      SOM_FUNC(saveSchedules),
       SOM_FUNC(clearLogs),
       SOM_FUNC(getUpdateCheck),
       SOM_FUNC(checkAppUpdate),
@@ -1206,6 +1222,130 @@ class AmuWindow : public sciter::window {
   // re-read the mod list and repaint.
   std::string getModMetaStatus() { return modMetaJson(drainModMeta()); }
 
+  // --- pre-shutdown warnings (warnplan.h) -------------------------------------
+  // The Server tab's list: [{minutes,text,enabled}]. A server that never stored
+  // a plan shows the AutoIt msg1/msg2/msg3 columns as a plan, or the default.
+  std::string getWarnPlan(int serverId) {
+    const amucore::Settings st = db_.settings(serverId);
+    std::vector<amucore::WarnStep> plan = amucore::parseWarnPlan(st.warnplan);
+    if (plan.empty() && st.warnplan.empty()) {
+      plan = amucore::legacyWarnPlan(st.restarttime, st.msg1, st.msg2, st.msg3);
+      if (plan.empty()) plan = amucore::defaultWarnPlan();
+    }
+    std::string out = "[";
+    for (size_t i = 0; i < plan.size(); ++i) {
+      if (i) out += ",";
+      out += "{\"minutes\":" + std::to_string(plan[i].minutes);
+      out += ",\"enabled\":" + std::string(plan[i].enabled ? "true" : "false");
+      out += ",\"text\":" + jstr(plan[i].text) + "}";
+    }
+    return out + "]";
+  }
+
+  // Stores the list exactly as given. An empty list is a valid choice ("stop
+  // without any warning") and is stored as such - see formatWarnPlan.
+  bool saveWarnPlan(int serverId, sciter::value arr) {
+    arr.isolate();
+    std::vector<amucore::WarnStep> plan;
+    const int n = arr.is_array() ? arr.length() : 0;
+    for (int i = 0; i < n; ++i) {
+      const sciter::value it = arr.get_item(i);
+      amucore::WarnStep st;
+      st.minutes = itemInt(it, "minutes", 0);
+      st.text = itemStr(it, "text");
+      st.enabled = itemBool(it, "enabled", true);
+      if (st.minutes < 0 || st.minutes > 24 * 60) continue;  // a day is the sane cap
+      if (st.text.size() > 300) st.text.resize(300);
+      plan.push_back(std::move(st));
+    }
+    return db_.saveWarnPlan(serverId, amucore::formatWarnPlan(plan));
+  }
+
+  // --- scheduled update checks (schedule.h), per server ----------------------
+  std::string getSchedules(int serverId) {
+    std::string out = "[";
+    std::vector<amucore::Schedule> list;
+    for (const amucore::Schedule& s : db_.schedules())
+      if (s.serverId == serverId) list.push_back(s);
+    for (size_t i = 0; i < list.size(); ++i) {
+      const amucore::Schedule& s = list[i];
+      if (i) out += ",";
+      out += "{\"id\":" + std::to_string(s.id);
+      out += ",\"enabled\":" + std::string(s.enabled ? "true" : "false");
+      out += ",\"name\":" + jstr(s.name);
+      out += ",\"hour\":" + std::to_string(s.hour);
+      out += ",\"minute\":" + std::to_string(s.minute);
+      out += ",\"days\":" + std::to_string(s.days);
+      out += ",\"serverId\":" + std::to_string(s.serverId);
+      out += ",\"lastRun\":" + jstr(s.lastRun) + "}";
+    }
+    return out + "]";
+  }
+
+  // Replaces this server's list; entries failing scheduleValid are dropped (the
+  // UI clamps first, so that only guards hand-crafted input).
+  bool saveSchedules(int serverId, sciter::value arr) {
+    arr.isolate();
+    std::vector<amucore::Schedule> list;
+    const int n = arr.is_array() ? arr.length() : 0;
+    for (int i = 0; i < n; ++i) {
+      const sciter::value it = arr.get_item(i);
+      amucore::Schedule s;
+      s.id = itemInt(it, "id", 0);
+      s.enabled = itemBool(it, "enabled", true);
+      s.name = itemStr(it, "name");
+      s.hour = itemInt(it, "hour", 4);
+      s.minute = itemInt(it, "minute", 0);
+      s.days = itemInt(it, "days", amucore::kAllDays) & amucore::kAllDays;
+      s.serverId = serverId;
+      s.lastRun = itemStr(it, "lastRun");
+      if (s.name.size() > 60) s.name.resize(60);
+      if (!amucore::scheduleValid(s)) continue;
+      list.push_back(std::move(s));
+    }
+    return db_.saveSchedules(serverId, list);
+  }
+
+ private:
+  // The scheduler watcher: every 20s (100ms slices so shutdown is instant)
+  // compare every schedule with the local clock. Minute precision plus the
+  // last_run stamp guarantee exactly one firing per due minute. Runs off the UI
+  // thread: db_ is serialized-mode SQLite and Orchestrator::start is an atomic
+  // handshake, and the log lines land in the Logs tab like everything else.
+  void schedulerLoop() {
+    while (!schedStop_.load()) {
+      for (int i = 0; i < 200 && !schedStop_.load(); ++i) Sleep(100);
+      if (schedStop_.load()) break;
+      const std::time_t now = std::time(nullptr);
+      std::tm tmv{};
+      localtime_s(&tmv, &now);
+      const std::string stamp = amucore::minuteStamp(tmv.tm_year + 1900, tmv.tm_mon + 1,
+                                                     tmv.tm_mday, tmv.tm_hour, tmv.tm_min);
+      const int wday = amucore::mondayIndex(tmv.tm_wday);
+      for (const amucore::Schedule& s : db_.schedules()) {
+        if (!amucore::scheduleDue(s, wday, tmv.tm_hour, tmv.tm_min, stamp)) continue;
+        db_.markScheduleRun(s.id, stamp);  // stamp first: never fire twice, even if start fails
+        const std::string target =
+            s.serverId == -1 ? std::string("all servers") : "server " + std::to_string(s.serverId);
+        const std::string who = "Schedule '" + s.name + "'";
+        if (orchestrator_.running()) {
+          db_.addLog(s.serverId, "normal",
+                     who + ": update check skipped - an update run is already in progress.");
+          continue;
+        }
+        if (orchestrator_.start(s.serverId, "", false))
+          db_.addLog(s.serverId, "normal", who + ": update check started for " + target + ".");
+        else
+          db_.addLog(s.serverId, "normal", who + ": could not start the update run.");
+      }
+    }
+  }
+
+  std::thread schedThread_;
+  std::atomic<bool> schedStop_{false};
+
+ public:
+
  private:
   // Write everything the worker has finished to the DB and return how many rows
   // landed. Runs on the UI thread, which is the one that owns db_.
@@ -1299,6 +1439,30 @@ class AmuWindow : public sciter::window {
     const sciter::value v = item.get_item(key);
     if (v.is_undefined() || v.is_null()) return std::string();
     return toUtf8(v.to_string());
+  }
+  // Integer field; numbers as-is, numeric strings parsed, anything else `def`.
+  static int itemInt(const sciter::value& item, const char* key, int def) {
+    const sciter::value v = item.get_item(key);
+    if (v.is_undefined() || v.is_null()) return def;
+    if (v.is_string()) {
+      const std::string s = toUtf8(v.to_string());
+      char* end = nullptr;
+      const long n = std::strtol(s.c_str(), &end, 10);
+      return (end && end != s.c_str()) ? static_cast<int>(n) : def;
+    }
+    return v.get(def);
+  }
+  // Boolean field; JS booleans, 0/1 and "true"/"false" strings, else `def`.
+  static bool itemBool(const sciter::value& item, const char* key, bool def) {
+    const sciter::value v = item.get_item(key);
+    if (v.is_undefined() || v.is_null()) return def;
+    if (v.is_bool()) return v.get(def);
+    if (v.is_int()) return v.get(0) != 0;
+    if (v.is_string()) {
+      const std::string s = toLowerAscii(toUtf8(v.to_string()));
+      return s == "true" || s == "1";
+    }
+    return def;
   }
 
   // Persist the start/stop intent in launch.desired_state. Best-effort: called

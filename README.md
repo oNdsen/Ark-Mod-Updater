@@ -31,6 +31,18 @@ and edit every last server setting. One small native app.
 > (2017–2026): a tiny native binary, a fully testable core, and a hardened
 > self-updater.
 
+## What's new in v2.2
+
+- **Shutdown warnings are back - and dynamic.** Before a server is stopped
+  for a mod update, AMU broadcasts your messages via RCON: any number of
+  steps, each with its own minute mark and text (`{min}` = minutes left),
+  each one switchable. Default: 20 / 15 / 10 / 5 / 1 minutes. Remove every
+  row to stop without a warning.
+- **Scheduled update checks.** Any number of schedules (time of day,
+  weekdays, one server or all): at that time AMU runs the same check as
+  *Check for updates* and, if something is outdated, the full flow with your
+  warnings. AMU has to be running at that time.
+
 ## What's new in v2.1
 
 - The mod list shows Workshop previews, names and **Released / Updated /
@@ -57,9 +69,10 @@ and edit every last server setting. One small native app.
   shutdown (`saveworld` → confirmed fresh save → `DoExit`), crash detection
   with auto-restart & backoff, adoption of already-running servers, live
   status in the sidebar.
-- 📡 **Update orchestration** — countdown broadcasts to your players
-  (`{minutes}` templating), world-save backup, all-or-nothing mod swap, and
-  the server only restarts if it was running before.
+- 📡 **Update orchestration** — configurable countdown broadcasts to your
+  players (any number of steps, `{min}` templating), scheduled update checks,
+  world-save backup, all-or-nothing mod swap, and the server only restarts if
+  it was running before.
 - ⚙️ **Full server configurator** — ~370 settings for **ASE and ASA** from
   the community wiki, searchable, categorized and collapsible, with an
   *Only set* filter, typed editors, tooltips, click-to-edit defaults, and raw
@@ -102,6 +115,8 @@ Two layers, cleanly separated so the entire core is testable without a GUI:
 | `launchspec` | Pure ASE/ASA command-line builder |
 | `supervisor` | Process lifecycle: start, graceful RCON stop, crash auto-restart |
 | `orchestrator` | The mod-update pipeline (SteamCMD → unpack → install → restart) |
+| `warnplan` | Pre-shutdown warning plan: storage format, defaults, countdown steps |
+| `schedule` | Scheduled update checks: due-time logic |
 | `steamcmd_parser` | SteamCMD stdout → typed progress events |
 | `zunpack` | ARK/Valve `.z` decompressor |
 | `mod_writer` | `.mod` descriptor generator |

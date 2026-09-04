@@ -321,6 +321,56 @@ header > *, footer > *, .nav > *, .pills > span, .thead > *, .trow > *, .kv > *,
 #modal .btns { display: flex; justify-content: flex-end; margin-top: 16px; }
 #modal .btns button { margin: 0 0 0 8px; }
 
+/* ---------- shutdown warnings (Server tab) + schedules (Settings) ---------- */
+.warnrow, .schedline { display: flex; align-items: center; margin-bottom: 8px; }
+.warnrow input, .schedline input {
+  height: 30px;
+  line-height: 18px;  /* Sciter: fixed-height inputs need an explicit line-height */
+  box-sizing: border-box;
+  background: #161A22;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  caret-color: #3DDC84;
+  padding: 5px 9px;
+  font-size: 12.5px;
+  font-family: "Segoe UI", system-ui, sans-serif;
+}
+.warnrow input:focus, .schedline input:focus { border-color: var(--accent); }
+.warnrow .toggle, .schedline .toggle { flex: none; margin: 0 10px 0 0; padding: 5px 12px 5px 7px; }
+.warnrow .w-min { width: 60px; flex: none; text-align: right; }
+.warnrow .w-unit { flex: none; color: var(--muted); font-size: 12px; margin: 0 10px 0 6px; }
+/* explicit calc() width: flex-grow does not stretch an input in Sciter (see
+   .pathrow); 270px = toggle + minutes + unit label + the trash button */
+.warnrow .w-text { flex: none; width: calc(100% - 270px); min-width: 160px; }
+/* trash-can buttons (trash.png, packed like logo.png): square, icon centered */
+.icon-btn {
+  flex: none;
+  box-sizing: border-box;
+  width: 34px; height: 30px;
+  padding: 0; margin: 0 0 0 10px;
+  line-height: 0;
+  text-align: center;
+}
+.icon-btn img { width: 16px; height: 16px; vertical-align: middle; }
+.icon-btn.danger:hover { background: rgba(223,53,53,0.14); border-color: var(--danger); }
+.schedcard { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px 2px 12px; margin-bottom: 10px; }
+.schedline .s-name { width: 200px; flex: none; margin-right: 10px; }
+.schedline .s-time { width: 70px; flex: none; margin-right: 10px; text-align: center; }
+.schedline .s-target { margin-right: 10px; }
+.schedline .days { display: flex; flex: none; margin-right: 14px; }
+.schedline .day {
+  width: 32px; height: 26px; line-height: 26px;
+  text-align: center; font-size: 11px;
+  border: 1px solid var(--line); border-radius: 6px;
+  margin-right: 4px; color: var(--muted); cursor: pointer;
+}
+.schedline .day:hover { background: var(--card-hover); }
+.schedline .day.on { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+.schedline .s-last { color: var(--muted); font-size: 11.5px; }
+.s-note { margin-left: 10px; font-size: 12px; color: var(--accent); }
+.s-note.err { color: var(--danger); }
+
 /* preview card */
 #preview {
   width: 230px;
@@ -985,6 +1035,35 @@ function ensureMods(s) {
   if (!s.mods) s.mods = [];
   return s.mods;
 }
+// Pre-shutdown warnings (per server): [{minutes, text, enabled}], edited in
+// place on the Server tab and written by "Save Server". Cached on the server
+// object like the launch config so edits survive a repaint until saved.
+const STUB_WARNPLAN = [20, 15, 10, 5, 1].map(m =>
+  ({ minutes: m, text: "Server shutdown in {min} min for mod updates", enabled: true }));
+function ensureWarnPlan(s) {
+  if (s._wp) return s._wp;
+  if (NATIVE && s.id !== undefined && s.id !== null) {
+    try { s._wp = JSON.parse(NATIVE.getWarnPlan(s.id)); }
+    catch (e) { console.log("getWarnPlan failed: " + e); }
+  }
+  if (!s._wp) s._wp = STUB_WARNPLAN.map(x => Object.assign({}, x));
+  return s._wp;
+}
+
+// Scheduled update checks, PER SERVER: [{id, enabled, name, hour, minute,
+// days, lastRun}]; days = bit 0 Monday ... bit 6 Sunday. Cached on the server
+// object like the warn plan and written by "Save Server".
+function ensureSchedules(s) {
+  if (s._sc) return s._sc;
+  if (NATIVE && s.id !== undefined && s.id !== null) {
+    try { s._sc = JSON.parse(NATIVE.getSchedules(s.id)); }
+    catch (e) { console.log("getSchedules failed: " + e); }
+  }
+  if (!s._sc) s._sc = [];
+  return s._sc;
+}
+const two = n => (n < 10 ? "0" : "") + n;
+
 // Load (and cache on the object) a server's launch config. Native: one call per server.
 function ensureLaunch(s) {
   if (s._lc) return s._lc;
@@ -1952,6 +2031,102 @@ function renderServer(host) {
     t.addEventListener("click", () => t.classList.toggle("on"));
   host.appendChild(blk);
 
+  // --- pre-shutdown warnings: the dynamic replacement for the AutoIt trio ---
+  // Rows edit the cached plan in place; "Save Server" writes it. Everything
+  // here stays visible - no display-toggled children (see buildCfgRow's note).
+  const wp = ensureWarnPlan(s);
+  const wblk = el(`<div class="block">
+    <div class="blabel">UPDATE SHUTDOWN WARNINGS</div>
+    <div class="muted-note" style="margin:0 0 10px 0">Broadcast via RCON before this server is stopped for a mod update, from the largest minute mark down to the stop. <b>{min}</b> or <b>{minutes}</b> = minutes left. Remove every row to stop without a warning.</div>
+    <div class="warnrows"></div>
+    <a class="cfgeditlink w-add">+ Add message</a></div>`);
+  const warnHost = $(".warnrows", wblk);
+  const paintWarnRows = () => {
+    warnHost.innerHTML = "";
+    wp.forEach((w, i) => {
+      const r = el(`<div class="warnrow">
+          <div class="toggle w-on ${w.enabled ? "on" : ""}"><div class="box"></div><span>Send</span></div>
+          <input|text class="w-min" value="${escAttr(String(w.minutes))}"><span class="w-unit">min before</span>
+          <input|text class="w-text" value="${escAttr(w.text)}">
+          <button class="icon-btn danger w-del"><img src="trash.png"></button></div>`);
+      attachTip($(".w-del", r), "Remove this message");
+      $(".w-on", r).addEventListener("click", () => {
+        w.enabled = !w.enabled;
+        $(".w-on", r).classList.toggle("on", w.enabled);
+      });
+      $(".w-min", r).addEventListener("input", () => {
+        const n = parseInt(inpVal($(".w-min", r)), 10);
+        w.minutes = isNaN(n) ? 0 : Math.max(0, n);
+      });
+      $(".w-text", r).addEventListener("input", () => { w.text = inpVal($(".w-text", r)); });
+      $(".w-del", r).addEventListener("click", () => { wp.splice(i, 1); paintWarnRows(); });
+      warnHost.appendChild(r);
+    });
+    if (!wp.length)
+      warnHost.appendChild(el(`<div class="muted-note" style="margin:0 0 8px 0">No warnings - the server is stopped right away.</div>`));
+  };
+  paintWarnRows();
+  $(".w-add", wblk).addEventListener("click", () => {
+    // next mark below the smallest existing one, so a list grows 20/15/10/5/1-style
+    let next = 5;
+    if (wp.length) { let mn = wp[0].minutes; for (const x of wp) mn = Math.min(mn, x.minutes); next = Math.max(0, mn - 1); }
+    wp.push({ minutes: next, text: "Server shutdown in {min} min for mod updates", enabled: true });
+    paintWarnRows();
+  });
+  host.appendChild(wblk);
+
+  // --- scheduled update checks for THIS server ---------------------------------
+  // Same cache/save pattern as the warnings: rows edit s._sc in place, "Save
+  // Server" writes them. The native watcher reads the table every 20s.
+  const sc = ensureSchedules(s);
+  const sblk = el(`<div class="block">
+    <div class="blabel">SCHEDULED UPDATE CHECKS</div>
+    <div class="muted-note" style="margin:0 0 10px 0">At the given time AMU runs the same check as <b>Check for updates</b> for this server: outdated mods are updated, with the shutdown warnings above. AMU has to be running at that time.</div>
+    <div class="schedrows"></div>
+    <a class="cfgeditlink s-add">+ Add schedule</a></div>`);
+  const schedHost = $(".schedrows", sblk);
+  const DAY_NAMES = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
+  const paintSched = () => {
+    schedHost.innerHTML = "";
+    sc.forEach((x, i) => {
+      let days = "";
+      for (let d = 0; d < 7; d++)
+        days += `<div class="day ${(x.days >> d) & 1 ? "on" : ""}" data-d="${d}">${DAY_NAMES[d]}</div>`;
+      const card = el(`<div class="schedcard">
+        <div class="schedline">
+          <div class="toggle s-on ${x.enabled ? "on" : ""}"><div class="box"></div><span>Active</span></div>
+          <input|text class="s-name" value="${escAttr(x.name)}" placeholder="Name">
+          <input|text class="s-time" value="${escAttr(x._time !== undefined ? x._time : two(x.hour) + ":" + two(x.minute))}">
+          <div class="days">${days}</div>
+          <button class="icon-btn danger s-del"><img src="trash.png"></button></div>
+        <div class="schedline"><span class="s-last">${x.lastRun ? "last run " + escAttr(x.lastRun) : "never run yet"}</span></div></div>`);
+      $(".s-on", card).addEventListener("click", () => {
+        x.enabled = !x.enabled;
+        $(".s-on", card).classList.toggle("on", x.enabled);
+      });
+      $(".s-name", card).addEventListener("input", () => { x.name = inpVal($(".s-name", card)); });
+      $(".s-time", card).addEventListener("input", () => { x._time = inpVal($(".s-time", card)); });
+      for (const dayEl of card.querySelectorAll(".day")) {
+        dayEl.addEventListener("click", () => {
+          const bit = 1 << parseInt(dayEl.getAttribute("data-d"), 10);
+          x.days ^= bit;
+          dayEl.classList.toggle("on", (x.days & bit) !== 0);
+        });
+      }
+      attachTip($(".s-del", card), "Remove this schedule");
+      $(".s-del", card).addEventListener("click", () => { sc.splice(i, 1); paintSched(); });
+      schedHost.appendChild(card);
+    });
+    if (!sc.length)
+      schedHost.appendChild(el(`<div class="muted-note" style="margin:0 0 8px 0">No schedules - updates run only when you start them.</div>`));
+  };
+  paintSched();
+  $(".s-add", sblk).addEventListener("click", () => {
+    sc.push({ id: 0, enabled: true, name: "Nightly update check", hour: 4, minute: 0, days: 127, lastRun: "" });
+    paintSched();
+  });
+  host.appendChild(sblk);
+
   const act = el(`<div class="actions">
       <span id="lifecycle"></span>
       <div class="sep"></div>
@@ -1982,8 +2157,12 @@ function renderServer(host) {
       try {
         NATIVE.saveServer(s.id, server);
         NATIVE.saveLaunchConfig(s.id, launch);
+        NATIVE.saveWarnPlan(s.id, s._wp || []);   // the shutdown-warning rows
+        NATIVE.saveSchedules(s.id, s._sc || []);  // this server's schedules
       } catch (e) { console.log("save failed: " + e); }
       s._lc = null;             // drop the cache; the reload re-fetches
+      s._wp = null;
+      s._sc = null;
       servers = loadServers();
     } else {
       Object.assign(s, server);

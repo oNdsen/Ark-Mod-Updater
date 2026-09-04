@@ -12,6 +12,8 @@ add_library(amucore STATIC
   src/orchestrator.cpp
   src/updatecheck.cpp
   src/db.cpp
+  src/warnplan.cpp
+  src/schedule.cpp
   ${sqlite_SOURCE_DIR}/sqlite3.c
 )
 target_include_directories(amucore PUBLIC include)

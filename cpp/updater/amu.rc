@@ -4,8 +4,8 @@
 1 ICON "amu.ico"
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 2,1,0,0
- PRODUCTVERSION 2,1,0,0
+ FILEVERSION 2,2,0,0
+ PRODUCTVERSION 2,2,0,0
  FILEOS VOS__WINDOWS32
  FILETYPE VFT_APP
 BEGIN
@@ -15,12 +15,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName",      "oNdsen"
             VALUE "FileDescription",  "AMU Updater"
-            VALUE "FileVersion",      "2.1.0.0"
+            VALUE "FileVersion",      "2.2.0.0"
             VALUE "InternalName",     "amu_updater"
             VALUE "LegalCopyright",   "Copyright (c) 2026 oNdsen"
             VALUE "OriginalFilename", "amu_updater.exe"
             VALUE "ProductName",      "ARK Mod Updater - Updater"
-            VALUE "ProductVersion",   "2.1.0.0"
+            VALUE "ProductVersion",   "2.2.0.0"
         END
     END
     BLOCK "VarFileInfo"
