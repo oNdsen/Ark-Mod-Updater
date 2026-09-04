@@ -37,7 +37,8 @@ std::vector<WarnStep> legacyWarnPlan(int restarttime, const std::string& msg1,
                                      const std::string& msg2, const std::string& msg3);
 
 // The steps the countdown actually runs: enabled only, minutes >= 0, sorted by
-// minutes descending, ONE step per minute mark (the first listed wins).
+// minutes descending (stable). Equal minute marks stay and are sent back to
+// back - secondsUntilNext() is 0 between them.
 std::vector<WarnStep> countdownSteps(const std::vector<WarnStep>& plan);
 
 // "{min}" and "{minutes}" -> the number.

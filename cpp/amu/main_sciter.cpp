@@ -8,8 +8,10 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <algorithm>
 #include <cstring>
 #include <ctime>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -124,10 +126,13 @@ bool fileExists(const std::string& path) {
 std::string fileMtimeLocal(const std::string& path) {
   WIN32_FILE_ATTRIBUTE_DATA fa{};
   if (!GetFileAttributesExW(toWide(path).c_str(), GetFileExInfoStandard, &fa)) return {};
-  FILETIME local{};
+  SYSTEMTIME utc{};
   SYSTEMTIME st{};
-  if (!FileTimeToLocalFileTime(&fa.ftLastWriteTime, &local) ||
-      !FileTimeToSystemTime(&local, &st)) {
+  // SystemTimeToTzSpecificLocalTime applies the DST rule that was in force AT
+  // that time; FileTimeToLocalFileTime applies today's bias and shows files
+  // from the other half of the year one hour off.
+  if (!FileTimeToSystemTime(&fa.ftLastWriteTime, &utc) ||
+      !SystemTimeToTzSpecificLocalTime(nullptr, &utc, &st)) {
     return {};
   }
   char buf[32];
@@ -249,6 +254,50 @@ std::string stripAllWs(const std::string& s) {
   for (char c : s)
     if (c != ' ' && c != '\t' && c != '\r' && c != '\n') out += c;
   return out;
+}
+
+// Cap a UTF-8 string at `maxBytes` without cutting a multi-byte sequence in
+// half (a stray lead byte would render as garbage in the UI and the RCON
+// broadcast). Backs up over continuation bytes (10xxxxxx).
+void truncateUtf8(std::string& s, size_t maxBytes) {
+  if (s.size() <= maxBytes) return;
+  size_t cut = maxBytes;
+  while (cut > 0 && (static_cast<unsigned char>(s[cut]) & 0xC0) == 0x80) --cut;
+  s.resize(cut);
+}
+
+// Rolling backup of an ini file before AMU rewrites it: a timestamped copy in
+// <config dir>\AMU-Backups\, the newest `keep` per file retained. One call per
+// SAVE ACTION (not per key), so a Config-tab save with 40 changes leaves one
+// backup. Best effort - a failed backup never blocks the write, but is logged
+// by the caller through the return value.
+bool backupIniFile(const std::string& iniPath, int keep = 10) {
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  const fs::path src(toWide(iniPath));
+  if (!fs::exists(src, ec)) return true;  // nothing to back up yet
+  const fs::path dir = src.parent_path() / L"AMU-Backups";
+  fs::create_directories(dir, ec);
+  SYSTEMTIME st{};
+  GetLocalTime(&st);
+  wchar_t stamp[32];
+  swprintf(stamp, 32, L"%04u%02u%02u-%02u%02u%02u", st.wYear, st.wMonth, st.wDay, st.wHour,
+           st.wMinute, st.wSecond);
+  const std::wstring stem = src.stem().wstring();
+  const fs::path dst = dir / (stem + L"." + stamp + src.extension().wstring());
+  if (!fs::copy_file(src, dst, fs::copy_options::overwrite_existing, ec)) return false;
+  // rotation: names sort chronologically because of the stamp
+  std::vector<fs::path> mine;
+  for (const auto& e : fs::directory_iterator(dir, ec)) {
+    const std::wstring n = e.path().filename().wstring();
+    if (n.rfind(stem + L".", 0) == 0 && e.path().extension() == src.extension()) mine.push_back(e.path());
+  }
+  std::sort(mine.begin(), mine.end());
+  while (mine.size() > static_cast<size_t>(keep > 0 ? keep : 1)) {
+    fs::remove(mine.front(), ec);
+    mine.erase(mine.begin());
+  }
+  return true;
 }
 
 // The "^[0-9]+$" Workshop-id check from _AddModToServer, plus a 19-digit cap so
@@ -604,6 +653,7 @@ class AmuWindow : public sciter::window {
     const std::string gamePort = getStr("gamePort", "");
     const std::string queryPort = getStr("queryPort", "");
     const std::string rconPort = getStr("rconPort", "");
+    backupIniFile(ini);
     if (!sessionName.empty()) amucore::iniWrite(ini, "SessionSettings", "SessionName", sessionName);
     if (isPort(gamePort)) amucore::iniWrite(ini, "SessionSettings", "Port", gamePort);
     if (isPort(queryPort)) amucore::iniWrite(ini, "SessionSettings", "QueryPort", queryPort);
@@ -825,6 +875,7 @@ class AmuWindow : public sciter::window {
     amucore::Server srv;
     if (!findServer(serverId, srv)) return false;
     const std::string ini = iniPathForFile(srv.path, file);
+    backupIniFile(ini);  // one rolling backup per save action
     edits.isolate();
     bool ok = true;
     const int n = edits.length();
@@ -846,6 +897,7 @@ class AmuWindow : public sciter::window {
     amucore::Server srv;
     if (!findServer(serverId, srv)) return false;
     const std::string ini = iniPathForFile(srv.path, file);
+    backupIniFile(ini);
     dels.isolate();
     bool ok = true;
     const int n = dels.length();
@@ -881,6 +933,7 @@ class AmuWindow : public sciter::window {
     const int n = lines.length();
     for (int i = 0; i < n; ++i)
       fullLines.push_back(toUtf8(lines.get_item(i).to_string()));
+    backupIniFile(iniPathForFile(srv.path, file));
     return amucore::iniReplaceKeyLines(iniPathForFile(srv.path, file), section, key,
                                        fullLines);
   }
@@ -950,6 +1003,7 @@ class AmuWindow : public sciter::window {
       return result(false, false, "", false);
 
     // Append to ActiveMods unless already present (the AutoIt dedup loop).
+    backupIniFile(iniPathFor(srv.path));
     if (!amucore::addActiveMod(iniPathFor(srv.path), id)) {
       std::string name;  // already active: report the cached name if we have one
       for (const auto& m : db_.mods())
@@ -962,30 +1016,13 @@ class AmuWindow : public sciter::window {
         static_cast<int64_t>(std::strtoull(id.c_str(), nullptr, 10));
     const amucore::WorkshopModInfo info = amucore::getModInfo(static_cast<uint64_t>(idNum));
 
-    // Ensure a mods-table row: new rows get name/preview only when the fetch
-    // succeeded (bare id row otherwise, like the AutoIt INSERT branches); an
-    // existing row gets name/preview refreshed on a successful fetch.
-    amucore::Mod row;
-    bool haveRow = false;
-    for (const auto& m : db_.mods())
-      if (m.modid == idNum) { row = m; haveRow = true; break; }
-    if (!haveRow) {
-      row.modid = idNum;
-      row.size = 0;
-      if (info.available) {
-        row.name = info.name;
-        row.preview = info.previewUrl;
-        row.date = info.date;      // was missing: an added mod showed "-" for
-        row.posted = info.posted;  // Updated until something else refreshed it
-      }
-      db_.upsertMod(row);
-    } else if (info.available) {
-      row.name = info.name;
-      row.preview = info.previewUrl;
-      row.date = info.date;
-      row.posted = info.posted;
-      db_.upsertMod(row);
-    }
+    // Ensure a mods-table row (bare id row like the AutoIt INSERT branches) and
+    // refresh the metadata when the fetch succeeded. Targeted write: an update
+    // run may own the install columns of this row right now.
+    if (info.available)
+      db_.updateModMeta(idNum, info.name, info.previewUrl, info.date, info.posted);
+    else
+      db_.updateModMeta(idNum, "", "", "", "");  // creates the row, keeps whatever is stored
 
     // NOTE: getModInfo folds the AutoIt "unavailable" and "neterror" cases into
     // available=false, so the placeholder covers both.
@@ -997,6 +1034,24 @@ class AmuWindow : public sciter::window {
     return result(true, false, info.available ? info.name : "", info.available);
   }
 
+  // Mods tab "move up / move down": the ActiveMods= order IS ARK's load order
+  // (left-most = highest priority). `csv` is the COMPLETE new list; anything
+  // that is not a Workshop id is dropped, so the caller must send every id.
+  bool setActiveMods(int serverId, std::string csv) {
+    amucore::Server srv;
+    if (!findServer(serverId, srv)) return false;
+    std::vector<std::string> ids;
+    for (const std::string& id : amucore::parseActiveMods(csv))
+      if (isModIdDigits(id)) ids.push_back(id);
+    const std::string ini = iniPathFor(srv.path);
+    backupIniFile(ini);
+    const bool ok = amucore::writeActiveMods(ini, ids);
+    if (ok)
+      db_.addLog(serverId, "normal", "ActiveMods order changed for server " +
+                                         std::to_string(serverId) + ": " + amucore::joinActiveMods(ids));
+    return ok;
+  }
+
   // Remove a mod from a server: ActiveMods entry + local files + DB cache row
   // (port of _RemoveSelectedMod; the confirmation dialog is the UI's job).
   bool removeMod(int serverId, std::string modId) {
@@ -1005,6 +1060,7 @@ class AmuWindow : public sciter::window {
     if (id.empty() || !findServer(serverId, srv)) return false;
 
     // 1) rewrite ActiveMods without this id (writes the rebuilt list either way).
+    backupIniFile(iniPathFor(srv.path));
     amucore::removeActiveMod(iniPathFor(srv.path), id);
 
     // 2) delete the local mod files (if present): folder recursively + the .mod.
@@ -1101,6 +1157,7 @@ class AmuWindow : public sciter::window {
       SOM_FUNC(skipUpdateCountdown),
       SOM_FUNC(addMod),
       SOM_FUNC(removeMod),
+      SOM_FUNC(setActiveMods),
       SOM_FUNC(refreshModMeta),
       SOM_FUNC(getModMetaStatus),
       SOM_FUNC(getWarnPlan),
@@ -1203,12 +1260,18 @@ class AmuWindow : public sciter::window {
           cachePreviewImage(dir, id, info.previewUrl);
         {
           std::lock_guard<std::mutex> lk(st->m);
-          // available=false covers both "item removed" and "network error"
-          // (see getModInfo), and neither should overwrite a cached name.
+          // available=false covers both "item removed" and "network error",
+          // and neither should overwrite a cached name. A TRANSPORT failure
+          // (offline, Steam blip) must not burn the id's one try per session,
+          // so it is taken off `tried` again and the next Mods-tab visit
+          // retries; a definitive "unavailable" stays on the list.
           if (info.available) {
             st->pending.push_back(ModMetaResult{static_cast<int64_t>(idNum),
                                                 info.name, info.date, info.posted,
                                                 info.previewUrl});
+          } else if (info.netError) {
+            for (size_t k = 0; k < st->tried.size(); ++k)
+              if (st->tried[k] == id) { st->tried.erase(st->tried.begin() + static_cast<long>(k)); break; }
           }
           st->done++;
         }
@@ -1255,7 +1318,7 @@ class AmuWindow : public sciter::window {
       st.text = itemStr(it, "text");
       st.enabled = itemBool(it, "enabled", true);
       if (st.minutes < 0 || st.minutes > 24 * 60) continue;  // a day is the sane cap
-      if (st.text.size() > 300) st.text.resize(300);
+      truncateUtf8(st.text, 300);
       plan.push_back(std::move(st));
     }
     return db_.saveWarnPlan(serverId, amucore::formatWarnPlan(plan));
@@ -1298,8 +1361,10 @@ class AmuWindow : public sciter::window {
       s.minute = itemInt(it, "minute", 0);
       s.days = itemInt(it, "days", amucore::kAllDays) & amucore::kAllDays;
       s.serverId = serverId;
-      s.lastRun = itemStr(it, "lastRun");
-      if (s.name.size() > 60) s.name.resize(60);
+      // lastRun is deliberately NOT taken from the UI - Db::saveSchedules keeps
+      // the stored stamp per id (the watcher owns it).
+      truncateUtf8(s.name, 60);
+      if (s.name.empty()) s.name = "Update check";
       if (!amucore::scheduleValid(s)) continue;
       list.push_back(std::move(s));
     }
@@ -1316,33 +1381,49 @@ class AmuWindow : public sciter::window {
     while (!schedStop_.load()) {
       for (int i = 0; i < 200 && !schedStop_.load(); ++i) Sleep(100);
       if (schedStop_.load()) break;
-      const std::time_t now = std::time(nullptr);
-      std::tm tmv{};
-      localtime_s(&tmv, &now);
-      const std::string stamp = amucore::minuteStamp(tmv.tm_year + 1900, tmv.tm_mon + 1,
-                                                     tmv.tm_mday, tmv.tm_hour, tmv.tm_min);
-      const int wday = amucore::mondayIndex(tmv.tm_wday);
-      for (const amucore::Schedule& s : db_.schedules()) {
-        if (!amucore::scheduleDue(s, wday, tmv.tm_hour, tmv.tm_min, stamp)) continue;
-        db_.markScheduleRun(s.id, stamp);  // stamp first: never fire twice, even if start fails
-        const std::string target =
-            s.serverId == -1 ? std::string("all servers") : "server " + std::to_string(s.serverId);
-        const std::string who = "Schedule '" + s.name + "'";
-        if (orchestrator_.running()) {
-          db_.addLog(s.serverId, "normal",
-                     who + ": update check skipped - an update run is already in progress.");
-          continue;
-        }
-        if (orchestrator_.start(s.serverId, "", false))
-          db_.addLog(s.serverId, "normal", who + ": update check started for " + target + ".");
-        else
-          db_.addLog(s.serverId, "normal", who + ": could not start the update run.");
+      try {
+        schedulerTick();
+      } catch (const std::exception& ex) {
+        db_.addLog(-1, "normal", std::string("Scheduler: unexpected error - ") + ex.what());
+      } catch (...) {
+        db_.addLog(-1, "normal", "Scheduler: unexpected error");
       }
     }
   }
 
+  // One evaluation of every schedule against the local clock. A due schedule
+  // is stamped (so a minute never fires twice) and QUEUED; the queue is
+  // drained one run at a time as soon as the orchestrator is free. Without the
+  // queue, two servers scheduled for the same minute would leave the second
+  // one skipped forever - the common "all servers at 04:00" setup.
+  void schedulerTick() {
+    const std::time_t now = std::time(nullptr);
+    std::tm tmv{};
+    localtime_s(&tmv, &now);
+    const std::string stamp = amucore::minuteStamp(tmv.tm_year + 1900, tmv.tm_mon + 1,
+                                                   tmv.tm_mday, tmv.tm_hour, tmv.tm_min);
+    const int wday = amucore::mondayIndex(tmv.tm_wday);
+    for (const amucore::Schedule& s : db_.schedules()) {
+      if (!amucore::scheduleDue(s, wday, tmv.tm_hour, tmv.tm_min, stamp)) continue;
+      db_.markScheduleRun(s.id, stamp);
+      schedQueue_.push_back(s);
+      // no quotes around the name: Db::addLog strips quoted runs (AutoIt mirror)
+      db_.addLog(s.serverId, "normal",
+                 "Schedule " + s.name + " (id " + std::to_string(s.id) + ") is due - update check queued.");
+    }
+    if (schedQueue_.empty() || orchestrator_.running()) return;
+    const amucore::Schedule s = schedQueue_.front();
+    schedQueue_.pop_front();
+    const std::string who = "Schedule " + s.name + " (id " + std::to_string(s.id) + ")";
+    if (orchestrator_.start(s.serverId, "", false))
+      db_.addLog(s.serverId, "normal", who + ": update check started for server " + std::to_string(s.serverId) + ".");
+    else
+      db_.addLog(s.serverId, "normal", who + ": could not start the update run.");
+  }
+
   std::thread schedThread_;
   std::atomic<bool> schedStop_{false};
+  std::deque<amucore::Schedule> schedQueue_;  // touched by the scheduler thread only
 
  public:
 
@@ -1358,18 +1439,12 @@ class AmuWindow : public sciter::window {
     if (take.empty()) return 0;
 
     int applied = 0;
-    const auto mods = db_.mods();
-    for (const ModMetaResult& r : take) {
-      amucore::Mod row;
-      row.modid = r.modid;
-      for (const auto& m : mods)
-        if (m.modid == r.modid) { row = m; break; }  // keep size/manifest/...
-      if (!r.name.empty()) row.name = r.name;
-      if (!r.previewUrl.empty()) row.preview = r.previewUrl;
-      if (!r.date.empty()) row.date = r.date;
-      if (!r.posted.empty()) row.posted = r.posted;
-      if (db_.upsertMod(row)) ++applied;
-    }
+    // Targeted write (updateModMeta creates the row if needed and keeps every
+    // column we do not carry): an update run may be writing size/timeupdated
+    // to the same row at this very moment, and a full-row replace from our
+    // snapshot would revert it.
+    for (const ModMetaResult& r : take)
+      if (db_.updateModMeta(r.modid, r.name, r.previewUrl, r.date, r.posted)) ++applied;
     return applied;
   }
 
@@ -1520,6 +1595,7 @@ class AmuWindow : public sciter::window {
     if (in.autoManaged && in.game == amucore::ArkGame::ASE) {
       std::vector<std::string> lines;
       for (const std::string& id : amucore::readActiveMods(ini)) lines.push_back("ModIDS=" + id);
+      backupIniFile(iniPathForFile(srv.path, "game"));
       amucore::iniReplaceKeyLines(iniPathForFile(srv.path, "game"), "ModInstaller", "ModIDS",
                                   lines);
     }

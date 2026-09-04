@@ -173,6 +173,15 @@ class Db {
   // Returns true on success.
   bool upsertMod(const Mod& mod);
 
+  // Targeted writers so the two concurrent producers of a mods row cannot
+  // revert each other (upsertMod replaces the WHOLE row from the caller's
+  // snapshot): the update run writes the install facts, the Workshop backfill
+  // the metadata. Both create the row when it is missing. Empty strings in
+  // updateModMeta keep the stored value.
+  bool updateModInstall(const Mod& m);  // size, usize, timeupdated, manifest, name, preview
+  bool updateModMeta(int64_t modid, const std::string& name, const std::string& preview,
+                     const std::string& date, const std::string& posted);
+
   // Append a log line. Mirrors _write_log: date = "YYYY/MM/DD HH:MM:SS", and any
   // single- or double-quoted run inside `entry` is stripped before storing
   // (StringRegExpReplace($text, "([""']).*?\1", "")). Returns the new log_id, or -1.

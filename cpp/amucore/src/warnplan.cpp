@@ -137,13 +137,11 @@ std::vector<WarnStep> legacyWarnPlan(int restarttime, const std::string& msg1,
 
 std::vector<WarnStep> countdownSteps(const std::vector<WarnStep>& plan) {
   std::vector<WarnStep> out;
-  for (const WarnStep& st : plan) {
-    if (!st.enabled || st.minutes < 0) continue;
-    bool dup = false;
-    for (const WarnStep& have : out)
-      if (have.minutes == st.minutes) { dup = true; break; }
-    if (!dup) out.push_back(st);
-  }
+  // Equal minute marks are KEPT (stable sort preserves the list order): the
+  // steps then go out back to back, which is what the AutoIt did when
+  // restarttime was 1 (msg1 and msg2 both at the one-minute mark).
+  for (const WarnStep& st : plan)
+    if (st.enabled && st.minutes >= 0) out.push_back(st);
   std::stable_sort(out.begin(), out.end(),
                    [](const WarnStep& a, const WarnStep& b) { return a.minutes > b.minutes; });
   return out;

@@ -800,6 +800,20 @@ bool Db::saveSchedules(int64_t serverId, const std::vector<Schedule>& list) {
     lastError_ = sqlite3_errmsg(db_);
     return false;
   }
+  // last_run is owned by the watcher, not by the UI: the list the UI sends was
+  // captured when the tab opened and may carry a stale stamp, which would let
+  // the once-per-minute guard fire a second run. Keep the stored stamps by id.
+  std::vector<std::pair<int64_t, std::string>> lastRuns;
+  {
+    sqlite3_stmt* q = nullptr;
+    if (sqlite3_prepare_v2(db_, "SELECT id, last_run FROM schedules WHERE server_id = ?;", -1,
+                           &q, nullptr) == SQLITE_OK) {
+      sqlite3_bind_int64(q, 1, serverId);
+      while (sqlite3_step(q) == SQLITE_ROW)
+        lastRuns.emplace_back(sqlite3_column_int64(q, 0), colText(q, 1));
+      sqlite3_finalize(q);
+    }
+  }
   sqlite3_stmt* st = nullptr;
   bool ok = sqlite3_prepare_v2(db_, "DELETE FROM schedules WHERE server_id = ?;", -1, &st,
                                nullptr) == SQLITE_OK;
@@ -826,7 +840,10 @@ bool Db::saveSchedules(int64_t serverId, const std::vector<Schedule>& list) {
     sqlite3_bind_int(st, 5, s.minute);
     sqlite3_bind_int(st, 6, s.days);
     sqlite3_bind_int64(st, 7, serverId);  // always this server's rows
-    bindText(st, 8, s.lastRun);
+    std::string lastRun;  // new rows start empty; existing ids keep the stored stamp
+    for (const auto& p : lastRuns)
+      if (s.id > 0 && p.first == s.id) lastRun = p.second;
+    bindText(st, 8, lastRun);
     ok = sqlite3_step(st) == SQLITE_DONE;
   }
   if (st) sqlite3_finalize(st);
@@ -853,6 +870,74 @@ bool Db::markScheduleRun(int64_t id, const std::string& stamp) {
   }
   bindText(st, 1, stamp);
   sqlite3_bind_int64(st, 2, id);
+  const bool ok = sqlite3_step(st) == SQLITE_DONE;
+  sqlite3_finalize(st);
+  if (!ok) lastError_ = sqlite3_errmsg(db_);
+  return ok;
+}
+
+
+bool Db::updateModInstall(const Mod& m) {
+  std::lock_guard<std::mutex> lk(mu_);
+  sqlite3_stmt* st = nullptr;
+  if (sqlite3_prepare_v2(db_, "INSERT OR IGNORE INTO mods(modid, size) VALUES(?, 0);", -1, &st,
+                         nullptr) != SQLITE_OK) {
+    lastError_ = sqlite3_errmsg(db_);
+    return false;
+  }
+  sqlite3_bind_int64(st, 1, m.modid);
+  sqlite3_step(st);
+  sqlite3_finalize(st);
+  const char* sql =
+      "UPDATE mods SET size = ?, usize = ?, timeupdated = ?, manifest = ?, "
+      "name = CASE WHEN ? = '' THEN name ELSE ? END, "
+      "preview = CASE WHEN ? = '' THEN preview ELSE ? END WHERE modid = ?;";
+  if (sqlite3_prepare_v2(db_, sql, -1, &st, nullptr) != SQLITE_OK) {
+    lastError_ = sqlite3_errmsg(db_);
+    return false;
+  }
+  sqlite3_bind_int64(st, 1, m.size);
+  sqlite3_bind_int64(st, 2, m.usize);
+  sqlite3_bind_int64(st, 3, m.timeupdated);
+  sqlite3_bind_int64(st, 4, m.manifest);
+  bindText(st, 5, m.name);
+  bindText(st, 6, m.name);
+  bindText(st, 7, m.preview);
+  bindText(st, 8, m.preview);
+  sqlite3_bind_int64(st, 9, m.modid);
+  const bool ok = sqlite3_step(st) == SQLITE_DONE;
+  sqlite3_finalize(st);
+  if (!ok) lastError_ = sqlite3_errmsg(db_);
+  return ok;
+}
+
+bool Db::updateModMeta(int64_t modid, const std::string& name, const std::string& preview,
+                       const std::string& date, const std::string& posted) {
+  std::lock_guard<std::mutex> lk(mu_);
+  sqlite3_stmt* st = nullptr;
+  if (sqlite3_prepare_v2(db_, "INSERT OR IGNORE INTO mods(modid, size) VALUES(?, 0);", -1, &st,
+                         nullptr) != SQLITE_OK) {
+    lastError_ = sqlite3_errmsg(db_);
+    return false;
+  }
+  sqlite3_bind_int64(st, 1, modid);
+  sqlite3_step(st);
+  sqlite3_finalize(st);
+  const char* sql =
+      "UPDATE mods SET "
+      "name = CASE WHEN ? = '' THEN name ELSE ? END, "
+      "preview = CASE WHEN ? = '' THEN preview ELSE ? END, "
+      "date = CASE WHEN ? = '' THEN date ELSE ? END, "
+      "posted = CASE WHEN ? = '' THEN posted ELSE ? END WHERE modid = ?;";
+  if (sqlite3_prepare_v2(db_, sql, -1, &st, nullptr) != SQLITE_OK) {
+    lastError_ = sqlite3_errmsg(db_);
+    return false;
+  }
+  bindText(st, 1, name);    bindText(st, 2, name);
+  bindText(st, 3, preview); bindText(st, 4, preview);
+  bindText(st, 5, date);    bindText(st, 6, date);
+  bindText(st, 7, posted);  bindText(st, 8, posted);
+  sqlite3_bind_int64(st, 9, modid);
   const bool ok = sqlite3_step(st) == SQLITE_DONE;
   sqlite3_finalize(st);
   if (!ok) lastError_ = sqlite3_errmsg(db_);

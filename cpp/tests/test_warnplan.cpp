@@ -101,7 +101,7 @@ TEST_CASE("legacyWarnPlan skips empty messages and is empty for a fresh database
 // ---------------------------------------------------------------------------
 // the countdown
 
-TEST_CASE("countdownSteps keeps enabled steps only, sorted descending, one per minute mark") {
+TEST_CASE("countdownSteps keeps enabled steps only, sorted descending, equal marks back to back") {
   std::vector<WarnStep> plan;
   plan.push_back(WarnStep{5, "five", true});
   plan.push_back(WarnStep{20, "twenty", true});
@@ -111,11 +111,25 @@ TEST_CASE("countdownSteps keeps enabled steps only, sorted descending, one per m
   plan.push_back(WarnStep{1, "one", true});
 
   const auto steps = countdownSteps(plan);
-  REQUIRE(steps.size() == 3);
+  REQUIRE(steps.size() == 4);
   CHECK(steps[0].minutes == 20);
   CHECK(steps[1].minutes == 5);
-  CHECK(steps[1].text == "five");  // the first listed wins
-  CHECK(steps[2].minutes == 1);
+  CHECK(steps[1].text == "five");        // stable: list order within a mark
+  CHECK(steps[2].minutes == 5);
+  CHECK(steps[2].text == "five again");
+  CHECK(secondsUntilNext(steps, 1) == 0);  // sent back to back
+  CHECK(secondsUntilNext(steps, 2) == 240);
+  CHECK(steps[3].minutes == 1);
+}
+
+TEST_CASE("legacyWarnPlan with restarttime 1 keeps both msg1 and msg2 at the one-minute mark") {
+  const auto steps = countdownSteps(legacyWarnPlan(1, "first", "second", "third"));
+  REQUIRE(steps.size() == 3);
+  CHECK(steps[0].text == "first");
+  CHECK(steps[1].text == "second");
+  CHECK(secondsUntilNext(steps, 0) == 0);
+  CHECK(secondsUntilNext(steps, 1) == 60);
+  CHECK(steps[2].minutes == 0);
 }
 
 TEST_CASE("countdownSteps of an all-disabled plan is empty") {

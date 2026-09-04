@@ -14,6 +14,7 @@ struct WorkshopModInfo {
   std::string posted;      // "Posted" text - when the item was first published, or ""
 
   bool available = false;  // false when the item was removed / private / not found
+  bool netError = false;   // true when NO response arrived (offline, WinHTTP failure) - retry later
 };
 
 // PURE parser for the HTML of

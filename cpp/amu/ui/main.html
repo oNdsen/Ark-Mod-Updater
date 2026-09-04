@@ -337,6 +337,7 @@ header > *, footer > *, .nav > *, .pills > span, .thead > *, .trow > *, .kv > *,
   font-family: "Segoe UI", system-ui, sans-serif;
 }
 .warnrow input:focus, .schedline input:focus { border-color: var(--accent); }
+.warnrow input.invalid, .schedline input.invalid { border-color: var(--danger); }
 .warnrow .toggle, .schedline .toggle { flex: none; margin: 0 10px 0 0; padding: 5px 12px 5px 7px; }
 .warnrow .w-min { width: 60px; flex: none; text-align: right; }
 .warnrow .w-unit { flex: none; color: var(--muted); font-size: 12px; margin: 0 10px 0 6px; }
@@ -1042,11 +1043,13 @@ const STUB_WARNPLAN = [20, 15, 10, 5, 1].map(m =>
   ({ minutes: m, text: "Server shutdown in {min} min for mod updates", enabled: true }));
 function ensureWarnPlan(s) {
   if (s._wp) return s._wp;
-  if (NATIVE && s.id !== undefined && s.id !== null) {
+  if (NATIVE) {  // the native branch is terminal: a failure is null, never a stub
+    if (s.id === undefined || s.id === null) return null;
     try { s._wp = JSON.parse(NATIVE.getWarnPlan(s.id)); }
-    catch (e) { console.log("getWarnPlan failed: " + e); }
+    catch (e) { console.log("getWarnPlan failed: " + e); return null; }
+    return s._wp;
   }
-  if (!s._wp) s._wp = STUB_WARNPLAN.map(x => Object.assign({}, x));
+  s._wp = STUB_WARNPLAN.map(x => Object.assign({}, x));
   return s._wp;
 }
 
@@ -1055,11 +1058,13 @@ function ensureWarnPlan(s) {
 // object like the warn plan and written by "Save Server".
 function ensureSchedules(s) {
   if (s._sc) return s._sc;
-  if (NATIVE && s.id !== undefined && s.id !== null) {
+  if (NATIVE) {  // terminal native branch - see ensureWarnPlan
+    if (s.id === undefined || s.id === null) return null;
     try { s._sc = JSON.parse(NATIVE.getSchedules(s.id)); }
-    catch (e) { console.log("getSchedules failed: " + e); }
+    catch (e) { console.log("getSchedules failed: " + e); return null; }
+    return s._sc;
   }
-  if (!s._sc) s._sc = [];
+  s._sc = [];
   return s._sc;
 }
 const two = n => (n < 10 ? "0" : "") + n;
@@ -1067,11 +1072,13 @@ const two = n => (n < 10 ? "0" : "") + n;
 // Load (and cache on the object) a server's launch config. Native: one call per server.
 function ensureLaunch(s) {
   if (s._lc) return s._lc;
-  if (NATIVE && s.id !== undefined && s.id !== null) {
+  if (NATIVE) {  // terminal native branch: null on failure, never the stub defaults
+    if (s.id === undefined || s.id === null) return null;
     try { s._lc = JSON.parse(NATIVE.getLaunchConfig(s.id)); }
-    catch (e) { console.log("getLaunchConfig failed: " + e); }
+    catch (e) { console.log("getLaunchConfig failed: " + e); return null; }
+    return s._lc;
   }
-  if (!s._lc) s._lc = Object.assign({}, STUB_LAUNCH);
+  s._lc = Object.assign({}, STUB_LAUNCH);
   return s._lc;
 }
 
@@ -1317,7 +1324,12 @@ function applyModMeta(json) {
     // setTimeout, because this is also reached from inside renderMods (the
     // kickoff call): re-entering render() there would tear down the DOM that
     // call is still building.
-    setTimeout(() => { if (screen === "mods") render(); }, 0);
+    setTimeout(() => {
+      if (screen !== "mods") return;
+      const addrow = $(".addmodrow");  // never rebuild the screen under someone typing a mod id
+      if (addrow && addrow.style.display !== "none") return;
+      render();
+    }, 0);
   }
   if (!st.running) stopModMetaPoll();
 }
@@ -1325,7 +1337,7 @@ function startModMetaRefresh(serverId) {
   if (!NATIVE || serverId === undefined || serverId === null) return;
   try { applyModMeta(NATIVE.refreshModMeta(serverId)); }
   catch (e) { console.log("refreshModMeta failed: " + e); return; }
-  if (modMetaTimer) return;
+  if (modMetaTimer || !modMetaInfo.running) return;  // nothing to poll for
   modMetaTimer = setInterval(() => {
     try { applyModMeta(NATIVE.getModMetaStatus()); }
     catch (e) { console.log("getModMetaStatus failed: " + e); stopModMetaPoll(); }
@@ -1640,7 +1652,7 @@ function renderSidebar() {
     const active = !sysScreen && cur === i;
     const count = (s.modCount !== undefined) ? s.modCount : (s.mods ? s.mods.length : 0);
     const n = el(`<div class="nav ${active ? "active" : ""}">
-        <div class="${dotClasses(lastStatus[sid(s, i)])}"></div><div class="nname">${s.name}</div>
+        <div class="${dotClasses(lastStatus[sid(s, i)])}"></div><div class="nname">${escAttr(s.name)}</div>
         <div class="badge">${count}</div></div>`);
     n.addEventListener("click", () => { cur = i; screen = "server"; selMod = 0; render(); });
     host.appendChild(n);
@@ -1658,6 +1670,9 @@ function renderMods(host) {
       <span id="modmeta" class="loadchip"><span class="dot"></span><span class="txt"></span></span></div>`);
   $(".cw", crumb).textContent = s.name;  // server names are user-entered
   host.appendChild(crumb);
+  // Kick the Workshop backfill BEFORE the rows are built so the placeholders
+  // and the chip show their loading state on the first paint.
+  startModMetaRefresh(s.id);
 
   const wrap = el(`<div id="modswrap"></div>`);
   const table = el(`<div id="modtable"></div>`);
@@ -1799,6 +1814,7 @@ function renderMods(host) {
       btns += `<button class="primary b-instmissing">Install missing (${missing.length})</button>`;
     btns += `<button class="${missing.length ? "" : "primary"} b-checkall">Check for updates</button>`;
     if (sel) btns += `<button class="b-selact">${selMissing ? "Install" : "Reinstall"}</button>`;
+    if (sel && list.length > 1) btns += `<button class="b-up">Move up</button><button class="b-down">Move down</button>`;
   }
   btns += `<button class="b-addmod">Add Mod</button>`;
   if (sel) btns += `<button class="danger b-remmod">Remove Mod</button>`;
@@ -1823,6 +1839,26 @@ function renderMods(host) {
       if (m) startUpdateRun(s.id, m.id, m.state === "ok");
     });
   }
+  // ActiveMods= order IS ARK's load order (top = highest priority); the
+  // native side rewrites the ini line, then the list is re-read.
+  const moveSel = (delta) => {
+    const i = selMod, j = i + delta;
+    if (j < 0 || j >= list.length) return;
+    const ids = list.map(m => m.id);
+    const t = ids[i]; ids[i] = ids[j]; ids[j] = t;
+    if (NATIVE) {
+      try { if (!NATIVE.setActiveMods(s.id, ids.join(","))) { console.log("setActiveMods failed"); return; } }
+      catch (e) { console.log("setActiveMods failed: " + e); return; }
+      s.mods = null;
+    } else {
+      const tmp = list[i]; list[i] = list[j]; list[j] = tmp;
+    }
+    selMod = j;
+    render();
+  };
+  const bu = $(".b-up", act), bd = $(".b-down", act);
+  if (bu) { attachTip(bu, "Move up: ARK loads ActiveMods top to bottom - the top mod has the highest priority."); bu.addEventListener("click", () => moveSel(-1)); }
+  if (bd) { attachTip(bd, "Move down: loads later (lower priority)."); bd.addEventListener("click", () => moveSel(1)); }
   $(".b-addmod", act).addEventListener("click", () => {
     addrow.style.display = (addrow.style.display === "none") ? "block" : "none";
     note.textContent = "";
@@ -1855,10 +1891,6 @@ function renderMods(host) {
     });
   });
   host.appendChild(act);
-
-  // Last: fill in whatever Workshop metadata is still missing (names, dates,
-  // preview images) in the background and repaint when it lands.
-  startModMetaRefresh(s.id);
 }
 
 /* ---------- shared form widgets (server screen + add-server screen) ---------- */
@@ -1965,17 +1997,186 @@ function inpVal(inp) {
     ? String(inp.value) : (inp.getAttribute("value") || "");
 }
 
+// ---------- automation screen (per server) ----------
+// Everything time-driven for one server: shutdown warnings before an update
+// stop, scheduled update checks (and, from 2.3, map backups). Own screen so the
+// Server tab stays about identity + launch. Edits live in s._wp / s._sc while
+// this screen is open and are written by "Save automation"; leaving the screen
+// drops unsaved edits (render() clears the caches), exactly like the Server
+// tab's fields.
+let automationNote = "";  // transient line shown once by the next render
+function renderAutomation(host) {
+  const s = servers[cur];
+  const crumb = el(`<div class="crumb">Automation: <b class="cw"></b></div>`);
+  $(".cw", crumb).textContent = s.name;
+  host.appendChild(crumb);
+  if (automationNote) {
+    const n = el(`<div class="formnote" style="display:block"></div>`);
+    n.textContent = automationNote;
+    n.style.color = automationNote === "Saved" ? "var(--accent)" : "var(--danger)";
+    host.appendChild(n);
+    automationNote = "";
+  }
+  // A failed native load must never be papered over with defaults: a later
+  // save would write those defaults over the real rows.
+  const wp = ensureWarnPlan(s);
+  const sc = ensureSchedules(s);
+  if (!wp || !sc) {
+    host.appendChild(el(`<div class="formnote" style="display:block">Could not load this server's automation settings - see the Logs tab. Nothing can be saved from this screen until it loads.</div>`));
+    return;
+  }
+  // --- pre-shutdown warnings: the dynamic replacement for the AutoIt trio ---
+  // Rows edit the cached plan in place; "Save Server" writes it. Everything
+  // here stays visible - no display-toggled children (see buildCfgRow's note).
+  const wblk = el(`<div class="block">
+    <div class="blabel">UPDATE SHUTDOWN WARNINGS</div>
+    <div class="muted-note" style="margin:0 0 10px 0">Broadcast via RCON before this server is stopped for a mod update, from the largest minute mark down to the stop. <b>{min}</b> or <b>{minutes}</b> = minutes left. Remove every row to stop without a warning.</div>
+    <div class="warnrows"></div>
+    <a class="cfgeditlink w-add">+ Add message</a></div>`);
+  const warnHost = $(".warnrows", wblk);
+  const paintWarnRows = () => {
+    warnHost.innerHTML = "";
+    wp.forEach((w, i) => {
+      const r = el(`<div class="warnrow">
+          <div class="toggle w-on ${w.enabled ? "on" : ""}"><div class="box"></div><span>Send</span></div>
+          <input|text class="w-min" value="${escAttr(String(w.minutes))}"><span class="w-unit">min before</span>
+          <input|text class="w-text" value="${escAttr(w.text)}">
+          <button class="icon-btn danger w-del"><img src="trash.png"></button></div>`);
+      attachTip($(".w-del", r), "Remove this message");
+      $(".w-on", r).addEventListener("click", () => {
+        w.enabled = !w.enabled;
+        $(".w-on", r).classList.toggle("on", w.enabled);
+      });
+      $(".w-min", r).addEventListener("input", () => {
+        const n = parseInt(inpVal($(".w-min", r)), 10);
+        w._minInvalid = isNaN(n) || n < 0 || n > 1440;  // a day is the cap the native side enforces too
+        if (!w._minInvalid) w.minutes = n;
+        $(".w-min", r).classList.toggle("invalid", !!w._minInvalid);
+      });
+      $(".w-text", r).addEventListener("input", () => { w.text = inpVal($(".w-text", r)); });
+      $(".w-del", r).addEventListener("click", () => { wp.splice(i, 1); paintWarnRows(); });
+      warnHost.appendChild(r);
+    });
+    if (!wp.length)
+      warnHost.appendChild(el(`<div class="muted-note" style="margin:0 0 8px 0">No warnings - the server is stopped right away.</div>`));
+  };
+  paintWarnRows();
+  $(".w-add", wblk).addEventListener("click", () => {
+    // next mark below the smallest existing one, so a list grows 20/15/10/5/1-style
+    let next = 5;
+    if (wp.length) { let mn = wp[0].minutes; for (const x of wp) mn = Math.min(mn, x.minutes); next = Math.max(0, mn - 1); }
+    wp.push({ minutes: next, text: "Server shutdown in {min} min for mod updates", enabled: true });
+    paintWarnRows();
+  });
+  host.appendChild(wblk);
+
+  // --- scheduled update checks for THIS server ---------------------------------
+  // Same cache/save pattern as the warnings: rows edit s._sc in place, "Save
+  // Server" writes them. The native watcher reads the table every 20s.
+  const sblk = el(`<div class="block">
+    <div class="blabel">SCHEDULED UPDATE CHECKS</div>
+    <div class="muted-note" style="margin:0 0 10px 0">At the given time AMU runs the same check as <b>Check for updates</b> for this server: outdated mods are updated, with the shutdown warnings above. AMU has to be running at that time.</div>
+    <div class="schedrows"></div>
+    <a class="cfgeditlink s-add">+ Add schedule</a></div>`);
+  const schedHost = $(".schedrows", sblk);
+  const DAY_NAMES = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
+  const paintSched = () => {
+    schedHost.innerHTML = "";
+    sc.forEach((x, i) => {
+      let days = "";
+      for (let d = 0; d < 7; d++)
+        days += `<div class="day ${(x.days >> d) & 1 ? "on" : ""}" data-d="${d}">${DAY_NAMES[d]}</div>`;
+      const card = el(`<div class="schedcard">
+        <div class="schedline">
+          <div class="toggle s-on ${x.enabled ? "on" : ""}"><div class="box"></div><span>Active</span></div>
+          <input|text class="s-name" value="${escAttr(x.name)}" placeholder="Name">
+          <input|text class="s-time ${x._timeInvalid ? "invalid" : ""}" value="${escAttr(x._time !== undefined ? x._time : two(x.hour) + ":" + two(x.minute))}">
+          <div class="days">${days}</div>
+          <button class="icon-btn danger s-del"><img src="trash.png"></button></div>
+        <div class="schedline"><span class="s-last">${x.lastRun ? "last run " + escAttr(x.lastRun) : "never run yet"}</span></div></div>`);
+      $(".s-on", card).addEventListener("click", () => {
+        x.enabled = !x.enabled;
+        $(".s-on", card).classList.toggle("on", x.enabled);
+      });
+      $(".s-name", card).addEventListener("input", () => { x.name = inpVal($(".s-name", card)); });
+      $(".s-time", card).addEventListener("input", () => {
+        const v = inpVal($(".s-time", card));
+        x._time = v;
+        const m = /^\s*(\d{1,2}):(\d{2})\s*$/.exec(v);
+        const h = m ? parseInt(m[1], 10) : -1, mi = m ? parseInt(m[2], 10) : -1;
+        x._timeInvalid = !(m && h >= 0 && h <= 23 && mi >= 0 && mi <= 59);
+        if (!x._timeInvalid) { x.hour = h; x.minute = mi; }
+        $(".s-time", card).classList.toggle("invalid", !!x._timeInvalid);
+      });
+      for (const dayEl of card.querySelectorAll(".day")) {
+        dayEl.addEventListener("click", () => {
+          const bit = 1 << parseInt(dayEl.getAttribute("data-d"), 10);
+          x.days ^= bit;
+          dayEl.classList.toggle("on", (x.days & bit) !== 0);
+        });
+      }
+      attachTip($(".s-del", card), "Remove this schedule");
+      $(".s-del", card).addEventListener("click", () => { sc.splice(i, 1); paintSched(); });
+      schedHost.appendChild(card);
+    });
+    if (!sc.length)
+      schedHost.appendChild(el(`<div class="muted-note" style="margin:0 0 8px 0">No schedules - updates run only when you start them.</div>`));
+  };
+  paintSched();
+  $(".s-add", sblk).addEventListener("click", () => {
+    sc.push({ id: 0, enabled: true, name: "Nightly update check", hour: 4, minute: 0, days: 127, lastRun: "" });
+    paintSched();
+  });
+  host.appendChild(sblk);
+
+  const act = el(`<div class="actions">
+      <button class="primary a-save">Save automation</button><span class="s-note"></span></div>`);
+  const note = $(".s-note", act);
+  const fail = (t) => { note.className = "s-note err"; note.textContent = t; };
+  $(".a-save", act).addEventListener("click", () => {
+    for (const w of wp)
+      if (w._minInvalid) return fail("Warning minutes must be a number between 0 and 1440.");
+    for (const x of sc) {
+      if (x._timeInvalid) return fail("Time must be HH:MM (24h) - \"" + x._time + "\" is not.");
+      if (!(x.days & 127)) return fail("Every schedule needs at least one weekday.");
+    }
+    let ok = true;
+    if (NATIVE) {
+      try { ok = !!NATIVE.saveWarnPlan(s.id, wp) && !!NATIVE.saveSchedules(s.id, sc); }
+      catch (e) { console.log("save automation failed: " + e); ok = false; }
+    }
+    if (!ok) return fail("Save failed - see the Logs tab.");
+    s._wp = null;  // re-read: ids and last-run stamps come back from the DB
+    s._sc = null;
+    automationNote = "Saved";
+    render();
+  });
+  host.appendChild(act);
+}
+
+let serverNote = "";  // transient "Saved" / error line shown once by the next render
 function renderServer(host) {
   const s = servers[cur];
   const lc = ensureLaunch(s);
+  if (!lc) {  // never render defaults over a failed native load (a save would write them)
+    host.appendChild(el(`<div class="crumb" style="color:var(--danger)">Could not load this server's launch settings - see the Logs tab. Saving is disabled until it loads.</div>`));
+    return;
+  }
   const idLabel = (s.id !== undefined && s.id !== null) ? s.id : cur + 1;
 
   // crumb row with the live status card on the right (painted by paintStatusCard)
   host.appendChild(el(`<div class="crumbrow">
-      <div class="crumb">${s.name} <span style="color:#9AA6B4">- ID ${idLabel}</span></div>
+      <div class="crumb">${escAttr(s.name)} <span style="color:#9AA6B4">- ID ${idLabel}</span></div>
       <div class="grow"></div>
       <div id="statuscard"></div></div>`));
   paintStatusCard();
+  if (serverNote) {
+    const n = el(`<div class="formnote" style="display:block"></div>`);
+    n.textContent = serverNote;
+    n.style.color = serverNote === "Saved" ? "var(--accent)" : "var(--danger)";
+    host.appendChild(n);
+    serverNote = "";
+  }
 
   const form = el(`<div class="form">
     <div class="colw">
@@ -2031,101 +2232,17 @@ function renderServer(host) {
     t.addEventListener("click", () => t.classList.toggle("on"));
   host.appendChild(blk);
 
-  // --- pre-shutdown warnings: the dynamic replacement for the AutoIt trio ---
-  // Rows edit the cached plan in place; "Save Server" writes it. Everything
-  // here stays visible - no display-toggled children (see buildCfgRow's note).
-  const wp = ensureWarnPlan(s);
-  const wblk = el(`<div class="block">
-    <div class="blabel">UPDATE SHUTDOWN WARNINGS</div>
-    <div class="muted-note" style="margin:0 0 10px 0">Broadcast via RCON before this server is stopped for a mod update, from the largest minute mark down to the stop. <b>{min}</b> or <b>{minutes}</b> = minutes left. Remove every row to stop without a warning.</div>
-    <div class="warnrows"></div>
-    <a class="cfgeditlink w-add">+ Add message</a></div>`);
-  const warnHost = $(".warnrows", wblk);
-  const paintWarnRows = () => {
-    warnHost.innerHTML = "";
-    wp.forEach((w, i) => {
-      const r = el(`<div class="warnrow">
-          <div class="toggle w-on ${w.enabled ? "on" : ""}"><div class="box"></div><span>Send</span></div>
-          <input|text class="w-min" value="${escAttr(String(w.minutes))}"><span class="w-unit">min before</span>
-          <input|text class="w-text" value="${escAttr(w.text)}">
-          <button class="icon-btn danger w-del"><img src="trash.png"></button></div>`);
-      attachTip($(".w-del", r), "Remove this message");
-      $(".w-on", r).addEventListener("click", () => {
-        w.enabled = !w.enabled;
-        $(".w-on", r).classList.toggle("on", w.enabled);
-      });
-      $(".w-min", r).addEventListener("input", () => {
-        const n = parseInt(inpVal($(".w-min", r)), 10);
-        w.minutes = isNaN(n) ? 0 : Math.max(0, n);
-      });
-      $(".w-text", r).addEventListener("input", () => { w.text = inpVal($(".w-text", r)); });
-      $(".w-del", r).addEventListener("click", () => { wp.splice(i, 1); paintWarnRows(); });
-      warnHost.appendChild(r);
-    });
-    if (!wp.length)
-      warnHost.appendChild(el(`<div class="muted-note" style="margin:0 0 8px 0">No warnings - the server is stopped right away.</div>`));
-  };
-  paintWarnRows();
-  $(".w-add", wblk).addEventListener("click", () => {
-    // next mark below the smallest existing one, so a list grows 20/15/10/5/1-style
-    let next = 5;
-    if (wp.length) { let mn = wp[0].minutes; for (const x of wp) mn = Math.min(mn, x.minutes); next = Math.max(0, mn - 1); }
-    wp.push({ minutes: next, text: "Server shutdown in {min} min for mod updates", enabled: true });
-    paintWarnRows();
-  });
-  host.appendChild(wblk);
-
-  // --- scheduled update checks for THIS server ---------------------------------
-  // Same cache/save pattern as the warnings: rows edit s._sc in place, "Save
-  // Server" writes them. The native watcher reads the table every 20s.
-  const sc = ensureSchedules(s);
-  const sblk = el(`<div class="block">
-    <div class="blabel">SCHEDULED UPDATE CHECKS</div>
-    <div class="muted-note" style="margin:0 0 10px 0">At the given time AMU runs the same check as <b>Check for updates</b> for this server: outdated mods are updated, with the shutdown warnings above. AMU has to be running at that time.</div>
-    <div class="schedrows"></div>
-    <a class="cfgeditlink s-add">+ Add schedule</a></div>`);
-  const schedHost = $(".schedrows", sblk);
-  const DAY_NAMES = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
-  const paintSched = () => {
-    schedHost.innerHTML = "";
-    sc.forEach((x, i) => {
-      let days = "";
-      for (let d = 0; d < 7; d++)
-        days += `<div class="day ${(x.days >> d) & 1 ? "on" : ""}" data-d="${d}">${DAY_NAMES[d]}</div>`;
-      const card = el(`<div class="schedcard">
-        <div class="schedline">
-          <div class="toggle s-on ${x.enabled ? "on" : ""}"><div class="box"></div><span>Active</span></div>
-          <input|text class="s-name" value="${escAttr(x.name)}" placeholder="Name">
-          <input|text class="s-time" value="${escAttr(x._time !== undefined ? x._time : two(x.hour) + ":" + two(x.minute))}">
-          <div class="days">${days}</div>
-          <button class="icon-btn danger s-del"><img src="trash.png"></button></div>
-        <div class="schedline"><span class="s-last">${x.lastRun ? "last run " + escAttr(x.lastRun) : "never run yet"}</span></div></div>`);
-      $(".s-on", card).addEventListener("click", () => {
-        x.enabled = !x.enabled;
-        $(".s-on", card).classList.toggle("on", x.enabled);
-      });
-      $(".s-name", card).addEventListener("input", () => { x.name = inpVal($(".s-name", card)); });
-      $(".s-time", card).addEventListener("input", () => { x._time = inpVal($(".s-time", card)); });
-      for (const dayEl of card.querySelectorAll(".day")) {
-        dayEl.addEventListener("click", () => {
-          const bit = 1 << parseInt(dayEl.getAttribute("data-d"), 10);
-          x.days ^= bit;
-          dayEl.classList.toggle("on", (x.days & bit) !== 0);
-        });
-      }
-      attachTip($(".s-del", card), "Remove this schedule");
-      $(".s-del", card).addEventListener("click", () => { sc.splice(i, 1); paintSched(); });
-      schedHost.appendChild(card);
-    });
-    if (!sc.length)
-      schedHost.appendChild(el(`<div class="muted-note" style="margin:0 0 8px 0">No schedules - updates run only when you start them.</div>`));
-  };
-  paintSched();
-  $(".s-add", sblk).addEventListener("click", () => {
-    sc.push({ id: 0, enabled: true, name: "Nightly update check", hour: 4, minute: 0, days: 127, lastRun: "" });
-    paintSched();
-  });
-  host.appendChild(sblk);
+  // --- cluster + advanced launch fields (stored since 2.0, never shown) --------
+  const adv = el(`<div class="block">
+    <div class="blabel">CLUSTER &amp; ADVANCED</div>
+    <div class="fieldrow">
+      <div class="field half"><label>Cluster ID (-clusterid)</label><input|text class="f-clusterid" value="${escAttr(lc.clusterId)}"></div>
+      <div class="field half"><label>Cluster directory (-ClusterDirOverride)</label><input|text class="f-clusterdir" value="${escAttr(lc.clusterDir)}"></div>
+    </div>
+    <div class="field"><label>Extra dash flags (e.g. -NoTransferFromFiltering -ForceAllowCaveFlyers)</label><input|text class="f-extraflags" value="${escAttr(lc.extraFlags)}"></div>
+    <div class="field"><label>Performance flags (e.g. -USEALLAVAILABLECORES -high)</label><input|text class="f-perfflags" value="${escAttr(lc.perfFlags)}"></div>
+    <div class="muted-note" style="margin-top:0">Appended to the command line as typed. Shutdown warnings, scheduled checks and backups live on the <b>Automation</b> tab.</div></div>`);
+  host.appendChild(adv);
 
   const act = el(`<div class="actions">
       <span id="lifecycle"></span>
@@ -2147,6 +2264,8 @@ function renderServer(host) {
       gamePort: num(".f-gport"), queryPort: num(".f-qport"), rconPort: num(".f-rport"),
       maxPlayers: num(".f-maxplayers"),
       extraArgs: val(".f-extra"),
+      clusterId: val(".f-clusterid"), clusterDir: val(".f-clusterdir"),
+      extraFlags: val(".f-extraflags"), perfFlags: val(".f-perfflags"),
       autoRestart: $(".t-autorestart", blk).classList.contains("on"),
       battleye: $(".t-battleye", blk).classList.contains("on"),
       crossplay: $(".t-crossplay", blk).classList.contains("on"),
@@ -2154,19 +2273,16 @@ function renderServer(host) {
     };
     if (NATIVE) {
       // Native side takes plain JS objects, NOT JSON strings.
-      try {
-        NATIVE.saveServer(s.id, server);
-        NATIVE.saveLaunchConfig(s.id, launch);
-        NATIVE.saveWarnPlan(s.id, s._wp || []);   // the shutdown-warning rows
-        NATIVE.saveSchedules(s.id, s._sc || []);  // this server's schedules
-      } catch (e) { console.log("save failed: " + e); }
+      let ok = false;
+      try { ok = !!NATIVE.saveServer(s.id, server) && !!NATIVE.saveLaunchConfig(s.id, launch); }
+      catch (e) { console.log("save failed: " + e); }
+      serverNote = ok ? "Saved" : "Save failed - see the Logs tab.";
       s._lc = null;             // drop the cache; the reload re-fetches
-      s._wp = null;
-      s._sc = null;
       servers = loadServers();
     } else {
       Object.assign(s, server);
       s._lc = launch;           // stub: keep the edits in the cache
+      serverNote = "Saved";
     }
     render();
   });
@@ -2729,14 +2845,18 @@ function onCfgNumInput(inp, st, isFloat) {
 function wireDefaultPrefill(inp, defStr) {
   if (!defStr) return;
   const val = () => String(inp.value !== undefined && inp.value !== null ? inp.value : "");
-  let prefilled = false;
+  let prefilled = false, touched = false;
   inp.addEventListener("focus", () => {
     if (val() !== "") return;
     prefilled = true;
+    touched = false;
     inp.value = defStr;  // programmatic: fires no "input", so nothing is staged
   });
+  inp.addEventListener("input", () => { touched = true; });
   inp.addEventListener("blur", () => {
-    if (prefilled && val() === defStr) inp.value = "";
+    // untouched prefill -> back to "not set"; an EDITED field stays even when
+    // the user typed their way back to exactly the default (it was staged)
+    if (prefilled && !touched) inp.value = "";
     prefilled = false;
   });
 }
@@ -3094,8 +3214,13 @@ function renderConfig(host) {
   const game = ensureLaunch(s).game || "ASE";
   ensureCfgDumps(s);
 
-  host.appendChild(el(`<div class="crumb">Config: <b>${s.name}</b>
+  host.appendChild(el(`<div class="crumb">Config: <b>${escAttr(s.name)}</b>
       <span style="color:#9AA6B4">- changes take effect on the next server start.</span></div>`));
+  {
+    const st = lastStatus[sid(s, cur)];
+    if (st && (st.state === "running" || st.state === "starting"))
+      host.appendChild(el(`<div class="formnote" style="display:block;color:var(--warn)">Server is running: ARK rewrites GameUserSettings.ini when it shuts down, so settings saved now can be overwritten. Stop the server first, or restart it right after saving.</div>`));
+  }
 
   const cats = [];
   for (const st of SCHEMA.settings)
@@ -3197,13 +3322,14 @@ function render() {
   if (screen !== "update") stopUpdPolling();  // leaving the update screen kills its 1s poll
   if (screen !== "settings") stopAupdPolling();  // same for the About update-check poll
   if (screen !== "mods") stopModMetaPoll();      // and for the Workshop backfill
+  if (screen !== "automation") for (const sv of servers) { sv._wp = null; sv._sc = null; }  // unsaved automation edits live only there
   const host = $("#content");
   host.innerHTML = "";
   // Startup notice: the banner tops every screen until installed or dismissed.
   if (updBannerLatest && !updBannerDismissed) host.appendChild(buildUpdBanner());
   // Only server/mods/config carry the pills; logs, update, add-server and
   // settings are full-width screens (the latter three also need no servers).
-  const tabbed = (screen === "server" || screen === "mods" || screen === "config");
+  const tabbed = (screen === "server" || screen === "mods" || screen === "config" || screen === "automation");
   if (tabbed && !servers.length) {
     host.appendChild(el(`<div class="crumb" style="color:#93A0AE">No servers configured. Use "+ Add Server".</div>`));
     return;
@@ -3213,15 +3339,18 @@ function render() {
     const pills = el(`<div class="pills">
         <span class="${screen === "server" ? "active" : ""}">Server</span>
         <span class="${screen === "mods" ? "active" : ""}">Mods</span>
-        <span class="${screen === "config" ? "active" : ""}">Config</span></div>`);
+        <span class="${screen === "config" ? "active" : ""}">Config</span>
+        <span class="${screen === "automation" ? "active" : ""}">Automation</span></div>`);
     pills.children[0].addEventListener("click", () => { screen = "server"; render(); });
     pills.children[1].addEventListener("click", () => { screen = "mods"; render(); });
     pills.children[2].addEventListener("click", () => { screen = "config"; render(); });
+    pills.children[3].addEventListener("click", () => { screen = "automation"; render(); });
     host.appendChild(pills);
   }
   if (screen === "mods") renderMods(host);
   else if (screen === "server") renderServer(host);
   else if (screen === "config") renderConfig(host);
+  else if (screen === "automation") renderAutomation(host);
   else if (screen === "update") renderUpdate(host);
   else if (screen === "addserver") renderAddServer(host);
   else if (screen === "settings") renderSettings(host);

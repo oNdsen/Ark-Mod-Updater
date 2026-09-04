@@ -1093,7 +1093,11 @@ bool Orchestrator::updateServer(const Server& srv,
             // files must not be swapped underneath a live server - it has the
             // .pak files mapped, so the install would half-fail and the running
             // world would be left on a mix of old and new mods. Abort this
-            // server; the restart tail below restores desired=Running.
+            // server. The restart tail at the end of this function is NOT
+            // reached after `break` (shutdownDone stays false), so the
+            // supervisor entry is re-armed right here: stopForUpdate left it
+            // with `updating` set, which would otherwise keep crash detection,
+            // the Start button and adoption dead until AMU is restarted.
             if (st == StopStatus::NoHandle) {
               const std::string msg =
                   "Server " + idStr + " could not be stopped (PID " + std::to_string(pid) +
@@ -1101,13 +1105,23 @@ bool Orchestrator::updateServer(const Server& srv,
                   "live server. Stop it manually, or run AMU with the same rights as the server.";
               line(msg);
               log("normal", msg);
+              sup_.startAfterUpdate(srv.id);  // the server still runs: this only re-arms the watcher
               ok = false;
               break;
             }
           } else {
-            log("normal", "Server " + idStr + " is running (PID " + std::to_string(pid) +
-                              ") but not managed by the Supervisor - could not stop it for "
-                              "the update.");
+            // Seen by pid but not known to the supervisor as running (an
+            // external start inside one adoption sweep, or a stuck entry): the
+            // same "never swap files under a live server" rule applies.
+            const std::string msg =
+                "Server " + idStr + " is running (PID " + std::to_string(pid) +
+                ") but is not managed by the Supervisor, so it could not be stopped - "
+                "skipping the mod swap. Stop it manually, or let AMU adopt it (a few seconds) "
+                "and run the update again.";
+            line(msg);
+            log("normal", msg);
+            ok = false;
+            break;
           }
         }
 
@@ -1155,7 +1169,9 @@ bool Orchestrator::updateServer(const Server& srv,
                         modId + " (" + modName + ") on Server " + idStr);
       modStatus(modId, wasInstalled ? "Updated" : "Installed");
 
-      // Update the mods row (read-modify-write keeps olddate/date/manifest intact).
+      // Update the mods row with a TARGETED write: `cached` is a snapshot from
+      // the start of the run, and the Workshop backfill may have written
+      // date/posted in the meantime - a full-row replace would revert them.
       Mod m = cached;
       m.modid = std::strtoll(modId.c_str(), nullptr, 10);
       m.size = bytes;
@@ -1163,7 +1179,7 @@ bool Orchestrator::updateServer(const Server& srv,
       m.name = modName;
       m.preview = modPreview;
       m.timeupdated = std::strtoll(acfTime.c_str(), nullptr, 10);
-      db_.upsertMod(m);
+      db_.updateModInstall(m);
       modRows[modId] = m;
     }
   } catch (const std::exception& ex) {

@@ -638,3 +638,79 @@ TEST_CASE("Db is pinned: neither copyable nor movable") {
                 "Db must stay pinned - threads keep a Db& to it");
   CHECK(true);  // the assertions above are compile-time
 }
+
+TEST_CASE("updateModMeta and updateModInstall never revert each other's columns") {
+  Db db;
+  REQUIRE(db.open(":memory:"));
+
+  // the Workshop backfill lands first: name/preview/date/posted, row created on the fly
+  REQUIRE(db.updateModMeta(42, "Structures Plus", "http://img/p.jpg", "5 Nov, 2018", "4 Nov, 2018"));
+  auto rows = db.mods();
+  REQUIRE(rows.size() == 1);
+  CHECK(rows[0].name == "Structures Plus");
+  CHECK(rows[0].posted == "4 Nov, 2018");
+  CHECK(rows[0].size == 0);
+
+  // the update run writes its install facts from a snapshot taken BEFORE the
+  // backfill (empty date/posted in the snapshot) - those columns must survive
+  Mod snap;
+  snap.modid = 42;
+  snap.size = 1000;
+  snap.usize = 5000;
+  snap.timeupdated = 1720000000;
+  snap.manifest = 7;
+  snap.name = "Structures Plus";
+  snap.preview = "";  // unknown in the snapshot -> keeps the stored preview
+  REQUIRE(db.updateModInstall(snap));
+  rows = db.mods();
+  REQUIRE(rows.size() == 1);
+  CHECK(rows[0].size == 1000);
+  CHECK(rows[0].usize == 5000);
+  CHECK(rows[0].timeupdated == 1720000000);
+  CHECK(rows[0].manifest == 7);
+  CHECK(rows[0].preview == "http://img/p.jpg");
+  CHECK(rows[0].date == "5 Nov, 2018");
+  CHECK(rows[0].posted == "4 Nov, 2018");
+
+  // and a later backfill with only a new posted date keeps everything else
+  REQUIRE(db.updateModMeta(42, "", "", "", "3 Nov, 2018"));
+  rows = db.mods();
+  CHECK(rows[0].name == "Structures Plus");
+  CHECK(rows[0].size == 1000);
+  CHECK(rows[0].posted == "3 Nov, 2018");
+}
+
+TEST_CASE("saveSchedules keeps the stored last_run of an existing id and ignores the caller's") {
+  Db db;
+  REQUIRE(db.open(":memory:"));
+  Schedule s;
+  s.name = "nightly";
+  s.hour = 4;
+  s.minute = 0;
+  s.days = kAllDays;
+  REQUIRE(db.saveSchedules(1, {s}));
+  auto list = db.schedules();
+  REQUIRE(list.size() == 1);
+  CHECK(list[0].serverId == 1);
+  CHECK(list[0].lastRun.empty());
+  REQUIRE(db.markScheduleRun(list[0].id, "2026-09-07 04:00"));
+
+  // the UI sends the row back with the stale stamp it cached earlier
+  Schedule stale = list[0];
+  stale.lastRun = "";
+  stale.name = "nightly (renamed)";
+  REQUIRE(db.saveSchedules(1, {stale}));
+  list = db.schedules();
+  REQUIRE(list.size() == 1);
+  CHECK(list[0].name == "nightly (renamed)");
+  CHECK(list[0].lastRun == "2026-09-07 04:00");  // owned by the watcher, not the UI
+
+  // rows of another server are untouched by a save for server 1
+  Schedule other;
+  other.name = "other";
+  REQUIRE(db.saveSchedules(2, {other}));
+  REQUIRE(db.saveSchedules(1, {}));
+  list = db.schedules();
+  REQUIRE(list.size() == 1);
+  CHECK(list[0].serverId == 2);
+}

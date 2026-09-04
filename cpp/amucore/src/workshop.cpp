@@ -229,6 +229,7 @@ namespace amucore {
 
 WorkshopModInfo getModInfo(uint64_t modId) {
   WorkshopModInfo info;  // available=false by default -> "neterror" on any failure
+  info.netError = true;  // every early return below is a transport failure; a parsed body replaces this
 
   HINTERNET hSession = WinHttpOpen(
       L"Mozilla/5.0 (Windows; U; Windows NT 5.1; en-US; rv:1.9.0.5) "
