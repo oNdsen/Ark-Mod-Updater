@@ -123,3 +123,16 @@ jobs:
             publish/release/manifest.txt
             publish/release/version.txt
             publish/amu-cpp-*.zip
+
+      # The release above is created as a DRAFT so that "latest" never points
+      # at a release whose assets are still uploading - the in-app updater reads
+      # version.txt + manifest.txt from latest/download/. With every asset in
+      # place it is published right here: a tag push IS a finished, public
+      # release, no click needed. Which release counts as "latest" is left to
+      # GitHub (semantic version order), so pushing v2.1.0 and v2.2.0 together
+      # still ends with v2.2.0 as latest.
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "${{ github.ref_name }}" --draft=false
