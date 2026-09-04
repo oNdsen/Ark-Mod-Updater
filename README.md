@@ -14,7 +14,7 @@ and edit every last server setting. One small native app.
 [![Platform](https://img.shields.io/badge/platform-Windows%20x64-0078D6?logo=windows&logoColor=white)](#-building)
 [![C++20](https://img.shields.io/badge/C%2B%2B-20-00599C?logo=cplusplus&logoColor=white)](#-architecture)
 [![UI: Sciter.JS](https://img.shields.io/badge/UI-Sciter.JS-8A2BE2)](https://sciter.com)
-[![Tests](https://img.shields.io/badge/tests-198%20passing-3DDC84)](#-tests)
+[![Tests](https://img.shields.io/badge/tests-199%20passing-3DDC84)](#-tests)
 [![Issues](https://img.shields.io/github/issues/oNdsen/ark-mod-updater)](https://github.com/oNdsen/ark-mod-updater/issues)
 
 [Download](https://github.com/oNdsen/ark-mod-updater/releases/latest) •
